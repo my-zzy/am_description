@@ -1,0 +1,16 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 50
+
+joint_state_broadcaster:
+  type: joint_state_broadcaster/JointStateBroadcaster
+
+arm_joint_1_position_controller:
+  type: position_controllers/JointPositionController
+  joint: arm_joint_1
+  pid: {p: 5.0, i: 0.0, d: 0.1}
+
+arm_joint_2_position_controller:
+  type: position_controllers/JointPositionController
+  joint: arm_joint_2
+  pid: {p: 5.0, i: 0.0, d: 0.1}
