@@ -15,8 +15,8 @@ def generate_launch_description():
     with open(urdf_path, 'r') as file:
         robot_description = file.read()
     
-    # Replace the $(arg controllers_file) placeholder with actual path
-    robot_description = robot_description.replace('$(arg controllers_file)', controllers_path)
+    # Replace the placeholder with actual path
+    robot_description = robot_description.replace('$(controllers_yaml_path)', controllers_path)
 
     # Robot State Publisher
     robot_state_publisher = Node(

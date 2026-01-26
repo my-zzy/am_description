@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Drone Controller Node - Controls thrust for the quadrotor
-Publishes Wrench messages to four rotor thrust topics
+Publishes Wrench messages to control the drone
 """
 
 import rclpy
@@ -16,17 +16,15 @@ class DroneController(Node):
         super().__init__('drone_controller')
         
         # Total mass: base(1.5) + arm_base(0.2) + arm1(0.1) + arm2(0.1) + 4*rotor(0.05*4) = 2.1 kg
-        # Hover thrust per rotor = (2.1 * 9.81) / 4 ≈ 5.15 N
-        self.hover_thrust = 5.15
-        self.current_thrust = [0.0, 0.0, 0.0, 0.0]
+        # Hover thrust = 2.1 * 9.81 ≈ 20.6 N
+        self.hover_thrust = 20.6
+        self.current_thrust = 0.0
+        self.current_torque = [0.0, 0.0, 0.0]  # roll, pitch, yaw torques
         
-        # Publishers for each rotor thrust
-        self.thrust_pubs = [
-            self.create_publisher(Wrench, '/aerial_manipulator/rotor_1/thrust', 10),
-            self.create_publisher(Wrench, '/aerial_manipulator/rotor_2/thrust', 10),
-            self.create_publisher(Wrench, '/aerial_manipulator/rotor_3/thrust', 10),
-            self.create_publisher(Wrench, '/aerial_manipulator/rotor_4/thrust', 10),
-        ]
+        # Publisher for thrust (single force on base_link)
+        self.thrust_pub = self.create_publisher(
+            Wrench, '/aerial_manipulator/thrust', 10
+        )
         
         # Arm controller publisher
         self.arm_pub = self.create_publisher(
@@ -37,57 +35,53 @@ class DroneController(Node):
         self.timer = self.create_timer(0.02, self.publish_thrust)  # 50 Hz
         
         self.get_logger().info('Drone Controller started!')
-        self.get_logger().info(f'Hover thrust per rotor: {self.hover_thrust:.2f} N')
+        self.get_logger().info(f'Hover thrust: {self.hover_thrust:.2f} N')
         self.get_logger().info('Commands:')
         self.get_logger().info('  takeoff  - Take off and hover')
+        self.get_logger().info('  hover    - Maintain hover')
         self.get_logger().info('  land     - Land the drone')
+        self.get_logger().info('  stop     - Stop motors')
         self.get_logger().info('  up       - Increase thrust')
         self.get_logger().info('  down     - Decrease thrust')
+        self.get_logger().info('  thrust <N> - Set specific thrust')
         self.get_logger().info('  arm <j1> <j2> - Set arm joint positions (radians)')
         
-    def set_thrust(self, thrust_values):
-        """Set thrust for all rotors"""
-        self.current_thrust = thrust_values
-        
     def publish_thrust(self):
-        """Publish current thrust to all rotors"""
-        for i, pub in enumerate(self.thrust_pubs):
-            msg = Wrench()
-            msg.force.x = 0.0
-            msg.force.y = 0.0
-            msg.force.z = self.current_thrust[i]  # Upward force in body frame
-            msg.torque.x = 0.0
-            msg.torque.y = 0.0
-            msg.torque.z = 0.0
-            pub.publish(msg)
+        """Publish current thrust"""
+        msg = Wrench()
+        msg.force.x = 0.0
+        msg.force.y = 0.0
+        msg.force.z = self.current_thrust  # Upward force in body frame
+        msg.torque.x = self.current_torque[0]
+        msg.torque.y = self.current_torque[1]
+        msg.torque.z = self.current_torque[2]
+        self.thrust_pub.publish(msg)
     
     def takeoff(self):
-        """Set hover thrust for takeoff"""
-        thrust = self.hover_thrust * 1.2  # 20% extra for takeoff
-        self.set_thrust([thrust, thrust, thrust, thrust])
-        self.get_logger().info(f'Taking off with thrust: {thrust:.2f} N per rotor')
+        """Set thrust for takeoff (20% extra)"""
+        self.current_thrust = self.hover_thrust * 1.3
+        self.get_logger().info(f'Taking off with thrust: {self.current_thrust:.2f} N')
         
     def hover(self):
         """Set hover thrust"""
-        self.set_thrust([self.hover_thrust] * 4)
-        self.get_logger().info(f'Hovering with thrust: {self.hover_thrust:.2f} N per rotor')
+        self.current_thrust = self.hover_thrust
+        self.get_logger().info(f'Hovering with thrust: {self.current_thrust:.2f} N')
         
     def land(self):
         """Reduce thrust for landing"""
-        thrust = self.hover_thrust * 0.8
-        self.set_thrust([thrust, thrust, thrust, thrust])
-        self.get_logger().info(f'Landing with thrust: {thrust:.2f} N per rotor')
+        self.current_thrust = self.hover_thrust * 0.7
+        self.get_logger().info(f'Landing with thrust: {self.current_thrust:.2f} N')
         
     def stop(self):
-        """Stop all rotors"""
-        self.set_thrust([0.0, 0.0, 0.0, 0.0])
+        """Stop all thrust"""
+        self.current_thrust = 0.0
+        self.current_torque = [0.0, 0.0, 0.0]
         self.get_logger().info('Motors stopped')
         
     def adjust_thrust(self, delta):
-        """Adjust all thrust by delta"""
-        new_thrust = [t + delta for t in self.current_thrust]
-        self.set_thrust(new_thrust)
-        self.get_logger().info(f'Thrust adjusted to: {new_thrust[0]:.2f} N per rotor')
+        """Adjust thrust by delta"""
+        self.current_thrust = max(0.0, self.current_thrust + delta)
+        self.get_logger().info(f'Thrust adjusted to: {self.current_thrust:.2f} N')
         
     def set_arm_position(self, joint1, joint2):
         """Set arm joint positions"""
@@ -120,17 +114,17 @@ def main(args=None):
                 elif cmd[0] == 'stop':
                     controller.stop()
                 elif cmd[0] == 'up':
-                    controller.adjust_thrust(1.0)
+                    controller.adjust_thrust(2.0)
                 elif cmd[0] == 'down':
-                    controller.adjust_thrust(-1.0)
+                    controller.adjust_thrust(-2.0)
                 elif cmd[0] == 'arm' and len(cmd) >= 3:
                     j1 = float(cmd[1])
                     j2 = float(cmd[2])
                     controller.set_arm_position(j1, j2)
                 elif cmd[0] == 'thrust' and len(cmd) >= 2:
                     t = float(cmd[1])
-                    controller.set_thrust([t, t, t, t])
-                    controller.get_logger().info(f'Thrust set to: {t:.2f} N per rotor')
+                    controller.current_thrust = t
+                    controller.get_logger().info(f'Thrust set to: {t:.2f} N')
                 elif cmd[0] == 'quit' or cmd[0] == 'exit':
                     controller.stop()
                     rclpy.shutdown()

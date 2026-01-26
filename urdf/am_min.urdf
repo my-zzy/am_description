@@ -282,49 +282,16 @@
   </ros2_control>
 
   <!-- ==========================
-       Gazebo thrust plugins for rotors
+       Gazebo thrust plugin - single force on base_link
        ========================== -->
-  <gazebo reference="rotor_1">
-    <plugin name="rotor_1_thrust" filename="libgazebo_ros_force.so">
+  <gazebo>
+    <plugin name="thrust_force" filename="libgazebo_ros_force.so">
       <ros>
         <namespace>/aerial_manipulator</namespace>
-        <remapping>wrench:=rotor_1/thrust</remapping>
+        <remapping>gazebo_ros_force:=thrust</remapping>
       </ros>
-      <link_name>rotor_1</link_name>
-      <force_frame>link</force_frame>
-    </plugin>
-  </gazebo>
-
-  <gazebo reference="rotor_2">
-    <plugin name="rotor_2_thrust" filename="libgazebo_ros_force.so">
-      <ros>
-        <namespace>/aerial_manipulator</namespace>
-        <remapping>wrench:=rotor_2/thrust</remapping>
-      </ros>
-      <link_name>rotor_2</link_name>
-      <force_frame>link</force_frame>
-    </plugin>
-  </gazebo>
-
-  <gazebo reference="rotor_3">
-    <plugin name="rotor_3_thrust" filename="libgazebo_ros_force.so">
-      <ros>
-        <namespace>/aerial_manipulator</namespace>
-        <remapping>wrench:=rotor_3/thrust</remapping>
-      </ros>
-      <link_name>rotor_3</link_name>
-      <force_frame>link</force_frame>
-    </plugin>
-  </gazebo>
-
-  <gazebo reference="rotor_4">
-    <plugin name="rotor_4_thrust" filename="libgazebo_ros_force.so">
-      <ros>
-        <namespace>/aerial_manipulator</namespace>
-        <remapping>wrench:=rotor_4/thrust</remapping>
-      </ros>
-      <link_name>rotor_4</link_name>
-      <force_frame>link</force_frame>
+      <link_name>base_link</link_name>
+      <force_frame>world</force_frame>
     </plugin>
   </gazebo>
 
@@ -335,7 +302,7 @@
     <plugin name="gazebo_ros2_control" filename="libgazebo_ros2_control.so">
       <robot_param>robot_description</robot_param>
       <robot_param_node>robot_state_publisher</robot_param_node>
-      <parameters>$(arg controllers_file)</parameters>
+      <parameters>$(controllers_yaml_path)</parameters>
     </plugin>
   </gazebo>
 
