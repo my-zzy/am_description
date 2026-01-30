@@ -60,6 +60,25 @@ An interactive Python script is provided:
 ros2 run am_description drone_controller.py
 ```
 
+### Using the Trajectory Controller
+
+An autonomous trajectory following controller:
+
+```bash
+ros2 run am_description trajectory_controller.py
+```
+
+Commands:
+- `start <mode>` - Start trajectory following (modes: hover, circle, square, figure8)
+- `stop` - Stop the controller
+- `status` - Show current status
+- `quit` - Exit
+
+The trajectory controller uses PID control to make the drone:
+- Take off and hover at 2m height
+- Follow circular, square, or figure-8 trajectories
+- Maintain stable flight with position and attitude control
+
 
 ### Control the Drone (Thrust)
 

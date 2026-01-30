@@ -18,6 +18,11 @@
   </material>
 
   <!-- ==========================
+       Dummy root link (no inertia for KDL compatibility)
+       ========================== -->
+  <link name="base_footprint"/>
+
+  <!-- ==========================
        Base link (quadrotor body)
        ========================== -->
   <link name="base_link">
@@ -40,6 +45,13 @@
       </geometry>
     </collision>
   </link>
+
+  <!-- Fixed joint connecting dummy root to actual base -->
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
 
   <!-- ==========================
        Rotor 1 (front-left)
@@ -283,6 +295,8 @@
 
   <!-- ==========================
        Gazebo thrust plugin - single force on base_link
+       (This is a MODEL plugin, not a link plugin)
+       Note: Gazebo merges base_footprint and base_link, so use base_footprint
        ========================== -->
   <gazebo>
     <plugin name="thrust_force" filename="libgazebo_ros_force.so">
@@ -290,7 +304,7 @@
         <namespace>/aerial_manipulator</namespace>
         <remapping>gazebo_ros_force:=thrust</remapping>
       </ros>
-      <link_name>base_link</link_name>
+      <link_name>base_footprint</link_name>
       <force_frame>world</force_frame>
     </plugin>
   </gazebo>
@@ -298,7 +312,7 @@
   <!-- ==========================
        IMU sensor for state estimation
        ========================== -->
-  <gazebo reference="base_link">
+  <gazebo reference="base_footprint">
     <sensor name="imu_sensor" type="imu">
       <always_on>true</always_on>
       <update_rate>100.0</update_rate>

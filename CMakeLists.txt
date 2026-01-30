@@ -28,9 +28,9 @@ endif()
 install(DIRECTORY urdf launch config
   DESTINATION share/${PROJECT_NAME})
 
-install(PROGRAMS
-  scripts/drone_controller.py
+install(DIRECTORY scripts/
   DESTINATION lib/${PROJECT_NAME}
+  USE_SOURCE_PERMISSIONS
 )
 
 ament_package()
