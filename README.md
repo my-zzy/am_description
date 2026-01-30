@@ -68,6 +68,8 @@ An autonomous trajectory following controller:
 ros2 run am_description trajectory_controller.py
 ```
 
+![alt](fig/Figure_1.png)
+
 Commands:
 - `start <mode>` - Start trajectory following (modes: hover, circle, square, figure8)
 - `stop` - Stop the controller
