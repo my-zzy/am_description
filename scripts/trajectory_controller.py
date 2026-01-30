@@ -11,6 +11,8 @@ from geometry_msgs.msg import Wrench
 from sensor_msgs.msg import Imu
 import math
 import numpy as np
+import matplotlib.pyplot as plt
+from collections import deque
 
 
 class TrajectoryController(Node):
@@ -64,6 +66,23 @@ class TrajectoryController(Node):
         # Control state
         self.control_enabled = False
         self.takeoff_complete = False
+        
+        # Data logging for plotting
+        self.max_log_size = 5000  # Store last 5000 samples
+        self.log_time = deque(maxlen=self.max_log_size)
+        self.log_pos_x = deque(maxlen=self.max_log_size)
+        self.log_pos_y = deque(maxlen=self.max_log_size)
+        self.log_pos_z = deque(maxlen=self.max_log_size)
+        self.log_pos_x_des = deque(maxlen=self.max_log_size)
+        self.log_pos_y_des = deque(maxlen=self.max_log_size)
+        self.log_pos_z_des = deque(maxlen=self.max_log_size)
+        self.log_roll = deque(maxlen=self.max_log_size)
+        self.log_pitch = deque(maxlen=self.max_log_size)
+        self.log_yaw = deque(maxlen=self.max_log_size)
+        self.log_roll_des = deque(maxlen=self.max_log_size)
+        self.log_pitch_des = deque(maxlen=self.max_log_size)
+        self.log_yaw_des = deque(maxlen=self.max_log_size)
+        self.start_log_time = None
         
         # Subscriber for IMU data
         self.imu_sub = self.create_subscription(
@@ -243,6 +262,10 @@ class TrajectoryController(Node):
             self.thrust_pub.publish(msg)
             return
         
+        # Initialize start time for logging
+        if self.start_log_time is None:
+            self.start_log_time = self.get_clock().now().nanoseconds / 1e9
+        
         # Compute trajectory
         self.compute_trajectory()
         
@@ -254,19 +277,44 @@ class TrajectoryController(Node):
         self.integral_error += pos_error * self.dt
         self.integral_error = np.clip(self.integral_error, -self.max_integral, self.max_integral)
         
-        # PID control output (desired acceleration)
+        # PID control output (desired acceleration in world frame)
         acc_desired = (self.kp_pos * pos_error + 
                       self.kd_pos * vel_error + 
                       self.ki_pos * self.integral_error)
         
-        # Compute thrust (compensate for gravity + desired acceleration)
-        thrust_z = self.mass * (9.81 + acc_desired[2])
+        # Total desired acceleration including gravity compensation
+        acc_total = acc_desired + np.array([0.0, 0.0, 9.81])
         
-        # Compute desired tilt angles for horizontal control
-        # Small angle approximation: thrust_x ≈ thrust_total * theta_y
-        thrust_total = max(thrust_z, 1.0)  # Avoid division by zero
-        desired_roll = -math.atan2(acc_desired[1] * self.mass, thrust_total)
-        desired_pitch = math.atan2(acc_desired[0] * self.mass, thrust_total)
+        # Compute thrust magnitude (force along body Z axis)
+        # thrust = mass * |acc_total| (approximately, when nearly level)
+        thrust_magnitude = self.mass * np.linalg.norm(acc_total)
+        
+        # Compute desired attitude to achieve desired acceleration
+        # The thrust vector (body Z) should point in the direction of acc_total
+        # Using rotation matrices:
+        #   Positive pitch (about Y) → body Z gets -X component
+        #   Positive roll (about X) → body Z gets -Y component
+        # So for +X accel: need -pitch, for +Y accel: need -roll
+        acc_norm = np.linalg.norm(acc_total)
+        if acc_norm > 0.1:
+            # Normalize the desired thrust direction
+            thrust_dir = acc_total / acc_norm
+            
+            # Desired pitch: for +X thrust component, need negative pitch
+            desired_pitch = math.asin(thrust_dir[0])
+            
+            # Desired roll: for +Y thrust component, need negative roll
+            desired_roll = math.asin(-thrust_dir[1] / math.cos(desired_pitch)) if abs(math.cos(desired_pitch)) > 0.1 else 0.0
+        else:
+            desired_roll = 0.0
+            desired_pitch = 0.0
+        
+        desired_yaw = 0.0  # Control yaw to zero
+        
+        # Clamp desired angles to reasonable values
+        max_tilt = 0.5  # ~28 degrees
+        desired_roll = np.clip(desired_roll, -max_tilt, max_tilt)
+        desired_pitch = np.clip(desired_pitch, -max_tilt, max_tilt)
         
         # Get current roll, pitch from quaternion
         roll, pitch, yaw = self.quaternion_to_euler(self.orientation)
@@ -274,14 +322,37 @@ class TrajectoryController(Node):
         # Attitude error (simple P control for now)
         roll_error = desired_roll - roll
         pitch_error = desired_pitch - pitch
+        yaw_error = desired_yaw - yaw  # Control yaw to zero
         
-        # Compute torques
-        torque_x = self.kp_att[0] * roll_error
-        torque_y = self.kp_att[1] * pitch_error
-        torque_z = 0.0  # No yaw control for now
+        # Wrap yaw error to [-pi, pi]
+        if yaw_error > math.pi:
+            yaw_error -= 2 * math.pi
+        elif yaw_error < -math.pi:
+            yaw_error += 2 * math.pi
         
-        # Clamp thrust
-        thrust_z = np.clip(thrust_z, 0.0, 40.0)
+        # Compute torques (P control with D damping from angular velocity)
+        torque_x = self.kp_att[0] * roll_error - self.kd_att[0] * self.angular_velocity[0]
+        torque_y = self.kp_att[1] * pitch_error - self.kd_att[1] * self.angular_velocity[1]
+        torque_z = self.kp_att[2] * yaw_error - self.kd_att[2] * self.angular_velocity[2]
+        
+        # Clamp thrust (now using thrust_magnitude instead of thrust_z)
+        thrust_z = np.clip(thrust_magnitude, 0.0, 40.0)
+        
+        # Log data
+        current_time = self.get_clock().now().nanoseconds / 1e9 - self.start_log_time
+        self.log_time.append(current_time)
+        self.log_pos_x.append(self.position[0])
+        self.log_pos_y.append(self.position[1])
+        self.log_pos_z.append(self.position[2])
+        self.log_pos_x_des.append(self.target_position[0])
+        self.log_pos_y_des.append(self.target_position[1])
+        self.log_pos_z_des.append(self.target_position[2])
+        self.log_roll.append(roll)
+        self.log_pitch.append(pitch)
+        self.log_yaw.append(yaw)
+        self.log_roll_des.append(desired_roll)
+        self.log_pitch_des.append(desired_pitch)
+        self.log_yaw_des.append(desired_yaw)
         
         # Publish command
         msg = Wrench()
@@ -340,6 +411,90 @@ class TrajectoryController(Node):
         """Stop controller"""
         self.control_enabled = False
         self.get_logger().info('Controller stopped')
+    
+    def plot_data(self):
+        """Plot position and attitude data in 6 subplots"""
+        if len(self.log_time) == 0:
+            self.get_logger().warn('No data to plot! Start a trajectory first.')
+            return
+        
+        # Convert deques to numpy arrays
+        time = np.array(self.log_time)
+        pos_x = np.array(self.log_pos_x)
+        pos_y = np.array(self.log_pos_y)
+        pos_z = np.array(self.log_pos_z)
+        pos_x_des = np.array(self.log_pos_x_des)
+        pos_y_des = np.array(self.log_pos_y_des)
+        pos_z_des = np.array(self.log_pos_z_des)
+        roll = np.rad2deg(np.array(self.log_roll))
+        pitch = np.rad2deg(np.array(self.log_pitch))
+        yaw = np.rad2deg(np.array(self.log_yaw))
+        roll_des = np.rad2deg(np.array(self.log_roll_des))
+        pitch_des = np.rad2deg(np.array(self.log_pitch_des))
+        yaw_des = np.rad2deg(np.array(self.log_yaw_des))
+        
+        # Create figure with 6 subplots (2 rows, 3 columns)
+        fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+        fig.suptitle('Drone Trajectory Tracking Performance', fontsize=16, fontweight='bold')
+        
+        # Position X
+        axes[0, 0].plot(time, pos_x, 'b-', label='Actual', linewidth=1.5)
+        axes[0, 0].plot(time, pos_x_des, 'r--', label='Desired', linewidth=1.5)
+        axes[0, 0].set_xlabel('Time (s)')
+        axes[0, 0].set_ylabel('X Position (m)')
+        axes[0, 0].set_title('X Position')
+        axes[0, 0].legend()
+        axes[0, 0].grid(True, alpha=0.3)
+        
+        # Position Y
+        axes[0, 1].plot(time, pos_y, 'b-', label='Actual', linewidth=1.5)
+        axes[0, 1].plot(time, pos_y_des, 'r--', label='Desired', linewidth=1.5)
+        axes[0, 1].set_xlabel('Time (s)')
+        axes[0, 1].set_ylabel('Y Position (m)')
+        axes[0, 1].set_title('Y Position')
+        axes[0, 1].legend()
+        axes[0, 1].grid(True, alpha=0.3)
+        
+        # Position Z
+        axes[0, 2].plot(time, pos_z, 'b-', label='Actual', linewidth=1.5)
+        axes[0, 2].plot(time, pos_z_des, 'r--', label='Desired', linewidth=1.5)
+        axes[0, 2].set_xlabel('Time (s)')
+        axes[0, 2].set_ylabel('Z Position (m)')
+        axes[0, 2].set_title('Z Position (Altitude)')
+        axes[0, 2].legend()
+        axes[0, 2].grid(True, alpha=0.3)
+        
+        # Roll
+        axes[1, 0].plot(time, roll, 'b-', label='Actual', linewidth=1.5)
+        axes[1, 0].plot(time, roll_des, 'r--', label='Desired', linewidth=1.5)
+        axes[1, 0].set_xlabel('Time (s)')
+        axes[1, 0].set_ylabel('Roll (deg)')
+        axes[1, 0].set_title('Roll Angle')
+        axes[1, 0].legend()
+        axes[1, 0].grid(True, alpha=0.3)
+        
+        # Pitch
+        axes[1, 1].plot(time, pitch, 'b-', label='Actual', linewidth=1.5)
+        axes[1, 1].plot(time, pitch_des, 'r--', label='Desired', linewidth=1.5)
+        axes[1, 1].set_xlabel('Time (s)')
+        axes[1, 1].set_ylabel('Pitch (deg)')
+        axes[1, 1].set_title('Pitch Angle')
+        axes[1, 1].legend()
+        axes[1, 1].grid(True, alpha=0.3)
+        
+        # Yaw
+        axes[1, 2].plot(time, yaw, 'b-', label='Actual', linewidth=1.5)
+        axes[1, 2].plot(time, yaw_des, 'r--', label='Desired', linewidth=1.5)
+        axes[1, 2].set_xlabel('Time (s)')
+        axes[1, 2].set_ylabel('Yaw (deg)')
+        axes[1, 2].set_title('Yaw Angle')
+        axes[1, 2].legend()
+        axes[1, 2].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        self.get_logger().info(f'Plotted {len(time)} data points over {time[-1]:.2f} seconds')
 
 
 def main(args=None):
@@ -354,6 +509,7 @@ def main(args=None):
         controller.get_logger().info('  start <mode>  - Start trajectory (hover/circle/square/figure8)')
         controller.get_logger().info('  stop          - Stop controller')
         controller.get_logger().info('  status        - Show current status')
+        controller.get_logger().info('  plot          - Plot position and attitude data')
         controller.get_logger().info('  quit          - Exit')
         controller.get_logger().info('=====================================\n')
         
@@ -378,6 +534,10 @@ def main(args=None):
                     print(f"Mode: {controller.trajectory_mode}")
                     print(f"Position: {controller.position}")
                     print(f"Target: {controller.target_position}")
+                    print(f"Logged samples: {len(controller.log_time)}")
+                    
+                elif cmd[0] == 'plot':
+                    controller.plot_data()
                     
                 elif cmd[0] in ['quit', 'exit']:
                     controller.stop()
@@ -385,7 +545,7 @@ def main(args=None):
                     break
                     
                 else:
-                    print("Unknown command. Try: start <mode>, stop, status, quit")
+                    print("Unknown command. Try: start <mode>, stop, status, plot, quit")
                     
             except Exception as e:
                 print(f"Error: {e}")
