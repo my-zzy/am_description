@@ -51,6 +51,8 @@ This will:
 - Spawn the robot at position (0, 0, 1)
 - Load and activate joint_state_broadcaster and arm_controller
 
+![alt](fig/gazebo.png)
+
 
 ### Using the Drone Controller Script
 
@@ -70,6 +72,7 @@ ros2 run am_description trajectory_controller.py
 
 ![alt](fig/Figure_1.png)
 
+
 Commands:
 - `start <mode>` - Start trajectory following (modes: hover, circle, square, figure8)
 - `stop` - Stop the controller
@@ -81,6 +84,14 @@ The trajectory controller uses PID control to make the drone:
 - Follow circular, square, or figure-8 trajectories
 - Maintain stable flight with position and attitude control
 
+### Using the Arm Controller
+
+a new script that hovers the drone and then moves the arm while logging both the drone position and end effector position.
+
+![alt](fig/arm_influence_step_results.png)
+
+
+## Publish control in the terminal
 
 ### Control the Drone (Thrust)
 

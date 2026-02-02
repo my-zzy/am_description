@@ -197,18 +197,18 @@
   <link name="arm_link_1">
     <inertial>
       <mass value="0.1"/>
-      <origin xyz="0 0 0.05"/>
+      <origin xyz="0 0 -0.05"/>
       <inertia ixx="0.0005" iyy="0.0005" izz="0.0005" ixy="0.0" ixz="0.0" iyz="0.0"/>
     </inertial>
     <visual>
-      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <origin xyz="0 0 -0.05" rpy="0 0 0"/>
       <geometry>
         <cylinder length="0.1" radius="0.01"/>
       </geometry>
       <material name="green"/>
     </visual>
     <collision>
-      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <origin xyz="0 0 -0.05" rpy="0 0 0"/>
       <geometry>
         <cylinder length="0.1" radius="0.01"/>
       </geometry>
@@ -229,18 +229,18 @@
   <link name="arm_link_2">
     <inertial>
       <mass value="0.1"/>
-      <origin xyz="0 0 0.05"/>
+      <origin xyz="0 0 -0.05"/>
       <inertia ixx="0.0005" iyy="0.0005" izz="0.0005" ixy="0.0" ixz="0.0" iyz="0.0"/>
     </inertial>
     <visual>
-      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <origin xyz="0 0 -0.05" rpy="0 0 0"/>
       <geometry>
         <cylinder length="0.1" radius="0.01"/>
       </geometry>
       <material name="red"/>
     </visual>
     <collision>
-      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <origin xyz="0 0 -0.05" rpy="0 0 0"/>
       <geometry>
         <cylinder length="0.1" radius="0.01"/>
       </geometry>
@@ -250,7 +250,7 @@
   <joint name="arm_joint_2" type="revolute">
     <parent link="arm_link_1"/>
     <child link="arm_link_2"/>
-    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+    <origin xyz="0 0 -0.1" rpy="0 0 0"/>
     <axis xyz="0 0 1"/>
     <limit lower="-1.57" upper="1.57" effort="1" velocity="1"/>
   </joint>
