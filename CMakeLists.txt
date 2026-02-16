@@ -33,4 +33,7 @@ install(DIRECTORY scripts/
   USE_SOURCE_PERMISSIONS
 )
 
+ament_python_install_package(${PROJECT_NAME})
+
+
 ament_package()

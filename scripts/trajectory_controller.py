@@ -20,7 +20,7 @@ class TrajectoryController(Node):
         super().__init__('trajectory_controller')
         
         # Drone parameters
-        self.mass = 2.1  # kg
+        self.mass = 2.2  # kg
         self.hover_thrust = self.mass * 9.81  # N
         
         # Current state (estimated from IMU)
