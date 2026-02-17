@@ -1,0 +1,66 @@
+# Predefined Trajectory Definitions for Aerial Manipulator
+
+trajectories:
+  # Hovering at fixed position
+  hover:
+    type: 'hover'
+    position: [0.0, 0.0, 2.0]  # [x, y, z] in meters
+    
+  # Circular trajectory
+  circle:
+    type: 'circle'
+    center: [0.0, 0.0, 2.0]  # [x, y, z] in meters
+    radius: 1.5              # meters
+    angular_speed: 0.3       # rad/s (one revolution ~21 seconds)
+    
+  circle_fast:
+    type: 'circle'
+    center: [0.0, 0.0, 2.0]
+    radius: 1.0
+    angular_speed: 0.5       # Faster for testing tracking limits
+    
+  circle_large:
+    type: 'circle'
+    center: [0.0, 0.0, 3.0]
+    radius: 2.5
+    angular_speed: 0.2       # Larger, slower circle
+    
+  # Square trajectory
+  square:
+    type: 'square'
+    center: [1.0, 1.0, 2.0]
+    side_length: 2.0         # meters
+    angular_speed: 0.3       # rad/s for phase progression
+    
+  # Figure-8 trajectory
+  figure8:
+    type: 'figure8'
+    center: [0.0, 0.0, 2.0]
+    radius: 1.5              # Half-width of figure-8
+    angular_speed: 0.3       # rad/s
+    
+  # Low altitude hover (for landing practice)
+  hover_low:
+    type: 'hover'
+    position: [0.0, 0.0, 0.5]
+    
+  # High altitude circle (safety margin)
+  circle_high:
+    type: 'circle'
+    center: [0.0, 0.0, 3.5]
+    radius: 1.0
+    angular_speed: 0.4
+    
+  # Aggressive maneuver test
+  circle_aggressive:
+    type: 'circle'
+    center: [0.0, 0.0, 2.0]
+    radius: 0.8
+    angular_speed: 0.8       # Fast, tight circle
+    
+# Usage Notes:
+# - Start with 'hover' to verify basic control
+# - Use 'circle' as standard trajectory for testing
+# - 'circle_aggressive' tests tracking limits and constraint handling
+# - 'figure8' tests rapid direction changes
+# - Adjust speeds based on MPC performance (solve time must be < 50ms @ 20Hz)

@@ -1,0 +1,69 @@
+# MPC Controller Parameters
+
+mpc_controller:
+  ros__parameters:
+    # Control loop settings
+    control_rate: 20.0  # Hz (50ms period)
+    
+    # Trajectory settings
+    trajectory_mode: 'circle'  # hover, circle, square, figure8
+    trajectory_radius: 1.5  # meters
+    trajectory_speed: 0.3   # rad/s
+    trajectory_height: 2.0  # meters
+    
+    # MPC Horizon Settings
+    N_prediction: 20  # Prediction horizon (steps)
+    N_control: 20     # Control horizon (steps)
+    dt_mpc: 0.05      # MPC time step (seconds)
+    
+    # Cost Function Weights - State Tracking
+    Q_pos: 10.0       # Position error weight
+    Q_vel: 1.0        # Velocity error weight
+    Q_att: 5.0        # Attitude error weight
+    Q_omega: 0.5      # Angular velocity weight
+    Q_arm: 2.0        # Arm joint position weight
+    
+    # Cost Function Weights - Control Effort
+    R_thrust: 0.01    # Thrust effort weight
+    R_torque: 0.1     # Torque effort weight
+    R_arm: 0.05       # Arm velocity weight
+    Rd_rate: 0.5      # Control rate (smoothness) weight
+    
+    # Physical Constraints
+    thrust_min: 0.0   # Minimum thrust (N)
+    thrust_max: 35.0  # Maximum thrust (N)
+    torque_limit: 2.0 # Torque limits (Nm) ±
+    arm_vel_limit: 2.0  # Arm velocity limits (rad/s) ±
+    tilt_limit: 0.52  # Maximum tilt angle (rad) ~30 degrees
+    
+    # Solver Options
+    max_iter: 100     # Maximum solver iterations
+    tolerance: 0.0001 # Convergence tolerance
+    solver_type: 'SLSQP'  # Optimization solver: SLSQP, trust-constr
+    
+    # State Estimator Settings
+    alpha_vel: 0.98   # Complementary filter weight (velocity)
+    use_ekf: false    # Use Extended Kalman Filter (vs simple integration)
+    
+# Tuning Guide:
+# 
+# For better tracking (at cost of control effort):
+#   - Increase Q_pos, Q_vel, Q_att
+#   - Decrease R_thrust, R_torque
+#
+# For smoother control (at cost of tracking):
+#   - Decrease Q_pos, Q_vel
+#   - Increase Rd_rate, R_thrust, R_torque
+#
+# For faster response:
+#   - Increase control_rate (if solve time allows)
+#   - Decrease N_prediction (shorter horizon)
+#
+# For better disturbance rejection:
+#   - Increase N_prediction (longer horizon)
+#   - Increase Q_vel (penalize velocity errors more)
+#
+# If solve time exceeds budget:
+#   - Decrease N_prediction (e.g., 15 or 10)
+#   - Increase tolerance
+#   - Decrease max_iter
