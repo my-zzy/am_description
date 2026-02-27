@@ -15,11 +15,6 @@ import numpy as np
 import math
 import time
 from collections import deque
-import sys
-import os
-
-# Add parent directory to path to import mpc module
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from am_description.mpc import MPCSolver, StateEstimator, euler_to_quaternion
 
@@ -45,8 +40,8 @@ class MPCController(Node):
         
         # MPC parameters (can be loaded from yaml)
         mpc_params = {
-            'N_prediction': 20,
-            'N_control': 20,
+            'N_prediction': 10,
+            'N_control': 10,
             'dt': 0.05,
             'Q_pos': 10.0,
             'Q_vel': 1.0,
@@ -181,10 +176,12 @@ class MPCController(Node):
         
         for k in range(horizon + 1):
             t = current_time + k * self.mpc_solver.params['dt']
+            g = 9.81
             
             if self.trajectory_mode == 'hover':
                 pos = np.array([0.0, 0.0, self.trajectory_height])
                 vel = np.array([0.0, 0.0, 0.0])
+                acc = np.array([0.0, 0.0, 0.0])
                 
             elif self.trajectory_mode == 'circle':
                 ang = t * self.trajectory_speed
@@ -197,6 +194,12 @@ class MPCController(Node):
                 vel = np.array([
                     -r * self.trajectory_speed * math.sin(ang),
                     r * self.trajectory_speed * math.cos(ang),
+                    0.0
+                ])
+                # Centripetal acceleration
+                acc = np.array([
+                    -r * self.trajectory_speed**2 * math.cos(ang),
+                    -r * self.trajectory_speed**2 * math.sin(ang),
                     0.0
                 ])
                 
@@ -218,6 +221,8 @@ class MPCController(Node):
                 else:
                     pos = np.array([0.0, side_length * (4.0 - phase), self.trajectory_height])
                     vel = np.array([0.0, -side_length * self.trajectory_speed, 0.0])
+                # Approximate as zero acceleration (corners would have impulses)
+                acc = np.array([0.0, 0.0, 0.0])
                     
             elif self.trajectory_mode == 'figure8':
                 ang = t * self.trajectory_speed
@@ -232,12 +237,44 @@ class MPCController(Node):
                     r * self.trajectory_speed * math.cos(2*ang),
                     0.0
                 ])
+                acc = np.array([
+                    -r * self.trajectory_speed**2 * math.sin(ang),
+                    -2.0 * r * self.trajectory_speed**2 * math.sin(2*ang),
+                    0.0
+                ])
             else:
                 pos = np.array([0.0, 0.0, self.trajectory_height])
                 vel = np.array([0.0, 0.0, 0.0])
+                acc = np.array([0.0, 0.0, 0.0])
             
-            # Reference state: level attitude, zero angular velocity, zero arm joints
-            quat = np.array([0.0, 0.0, 0.0, 1.0])  # Level orientation
+            # Compute desired orientation from required thrust direction
+            # Thrust must counteract gravity and provide acceleration
+            thrust_vector = acc + np.array([0.0, 0.0, g])
+            thrust_mag = np.linalg.norm(thrust_vector)
+            
+            if thrust_mag > 1e-6:
+                # Normalize to get desired z-body direction
+                z_body = thrust_vector / thrust_mag
+                
+                # Desired yaw angle (aligned with velocity direction, or zero if stationary)
+                vel_mag = np.linalg.norm(vel[0:2])
+                if vel_mag > 0.1:
+                    yaw = math.atan2(vel[1], vel[0])
+                else:
+                    yaw = 0.0
+                
+                # Compute roll and pitch from z_body
+                # z_body = [sin(pitch), -sin(roll)*cos(pitch), cos(roll)*cos(pitch)]
+                pitch = math.asin(np.clip(z_body[0], -1.0, 1.0))
+                roll = math.atan2(-z_body[1], z_body[2])
+                
+                # Convert to quaternion
+                quat = euler_to_quaternion(roll, pitch, yaw)
+            else:
+                # Hover case: level orientation
+                quat = np.array([0.0, 0.0, 0.0, 1.0])
+            
+            # Zero angular velocity and arm joints at neutral
             omega = np.array([0.0, 0.0, 0.0])
             q_arm = np.array([0.0, 0.0])
             
@@ -273,6 +310,7 @@ class MPCController(Node):
         solve_start = time.time()
         try:
             u_opt, x_pred, solve_info = self.mpc_solver.solve(x_current, x_ref)
+            # print(f"MPC solver done: {solve_info}")
             solve_time = time.time() - solve_start
             
             # Apply first control input
@@ -319,7 +357,7 @@ class MPCController(Node):
             self.tracking_errors.append(pos_error)
             
             # Log status periodically
-            if int(self.trajectory_time / self.dt) % 40 == 0:  # Every 2 seconds at 20Hz
+            if int(self.trajectory_time / self.dt) % 10 == 0:  # Every 2 seconds at 20Hz
                 avg_solve_time = np.mean(self.solve_times) * 1000  # ms
                 avg_error = np.mean(self.tracking_errors)
                 self.get_logger().info(

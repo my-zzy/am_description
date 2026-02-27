@@ -37,7 +37,7 @@ colcon build --packages-select am_description
 source install/setup.bash
 ```
 
-## Usage
+## Basic Usage
 
 ### Launch the Simulation
 
@@ -51,7 +51,9 @@ This will:
 - Spawn the robot at position (0, 0, 1)
 - Load and activate joint_state_broadcaster and arm_controller
 
-![alt](fig/gazebo.png)
+<p align="center">
+  <img src="fig/gazebo.png" width="80%">
+</p>
 
 
 ### Using the Drone Controller Script
@@ -70,7 +72,9 @@ An autonomous trajectory following controller:
 ros2 run am_description trajectory_controller.py
 ```
 
-![alt](fig/Figure_1.png)
+<p align="center">
+  <img src="fig/drone_pid.png" width="80%">
+</p>
 
 
 Commands:
@@ -88,42 +92,8 @@ The trajectory controller uses PID control to make the drone:
 
 a new script that hovers the drone and then moves the arm while logging both the drone position and end effector position.
 
-![alt](fig/arm_influence_step_results.png)
-
-
-## Publish control in the terminal
-
-### Control the Drone (Thrust)
-
-The drone uses `gazebo_ros_force` plugin to apply thrust. Publish to `/aerial_manipulator/thrust`:
-
 ```bash
-# Takeoff (apply ~25N upward force, hover is ~20.6N for 2.1kg mass)
-ros2 topic pub /aerial_manipulator/thrust geometry_msgs/msg/Wrench "{force: {z: 25.0}}" -r 50
-
-# Hover
-ros2 topic pub /aerial_manipulator/thrust geometry_msgs/msg/Wrench "{force: {z: 20.6}}" -r 50
-
-# Land (reduce thrust gradually)
-ros2 topic pub /aerial_manipulator/thrust geometry_msgs/msg/Wrench "{force: {z: 15.0}}" -r 50
-
-# Stop
-ros2 topic pub /aerial_manipulator/thrust geometry_msgs/msg/Wrench "{force: {z: 0.0}}" --once
-```
-
-### Control the Arm Joints
-
-The arm uses `ForwardCommandController` for position control. Send commands to both joints:
-
-```bash
-# Move arm to position [joint1, joint2] in radians (range: -1.57 to 1.57)
-ros2 topic pub /arm_controller/commands std_msgs/msg/Float64MultiArray "{data: [0.5, 0.3]}" --once
-
-# Return to center position
-ros2 topic pub /arm_controller/commands std_msgs/msg/Float64MultiArray "{data: [0.0, 0.0]}" --once
-
-# Extend arm
-ros2 topic pub /arm_controller/commands std_msgs/msg/Float64MultiArray "{data: [1.0, 0.5]}" --once
+ros2 run am_description arm_influence_study.py
 ```
 
 Commands:
@@ -136,9 +106,53 @@ Commands:
 - `arm <j1> <j2>` - Set arm joint positions in radians
 - `quit` - Exit
 
+<p align="center">
+  <img src="fig/arm_influence_step_results.png" width="80%">
+</p>
+
+## MPC controller
+
+```bash
+ros2 run am_description mpc_controller.py
+```
+
+See doc
+[README_mpc](am_description/mpc/README_mpc.md)
+
+To test mpc solver performance (scipy is too slow):
+```bash
+cd ~/am_ws/src/am_description
+python -m am_description.mpc.mpc_solver
+```
+
+
+## Other terminal usage
+
+### Control the Drone (Thrust)
+
+The drone uses `gazebo_ros_force` plugin to apply thrust. Publish to `/aerial_manipulator/thrust`:
+
+```bash
+# Takeoff (apply ~25N upward force, hover is ~20.6N for 2.1kg mass)
+ros2 topic pub /aerial_manipulator/thrust geometry_msgs/msg/Wrench "{force: {z: 25.0}}" -r 50
+
+# Stop
+ros2 topic pub /aerial_manipulator/thrust geometry_msgs/msg/Wrench "{force: {z: 0.0}}" --once
+```
+
+### Control the Arm Joints
+
+The arm uses `ForwardCommandController` for position control. Send commands to both joints:
+
+```bash
+# Move arm to position [joint1, joint2] in radians (range: -1.57 to 1.57)
+ros2 topic pub /arm_controller/commands std_msgs/msg/Float64MultiArray "{data: [0.5, 0.3]}" --once
+```
+
 ### View Joint States
 
 ```bash
+ros2 topic list
 ros2 topic echo /joint_states
 ```
 
