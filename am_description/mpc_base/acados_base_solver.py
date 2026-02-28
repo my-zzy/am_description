@@ -2,7 +2,7 @@
 Acados-based MPC Solver for Quadrotor Base Control
 
 Simplified MPC solver for quadrotor base only (no arm).
-12 states, 4 controls.
+13 states, 4 controls.
 """
 
 import numpy as np
@@ -18,7 +18,7 @@ class AcadosBaseMPCSolver:
     Features:
     - Real-time iteration (RTI) scheme
     - Structure-exploiting QP solver (HPIPM)
-    - 12 states, 4 controls (simplified compared to full aerial manipulator)
+    - 13 states, 4 controls (simplified compared to full aerial manipulator)
     """
     
     def __init__(self, params=None):
@@ -69,7 +69,7 @@ class AcadosBaseMPCSolver:
         self.solver = AcadosOcpSolver(self.ocp, json_file='acados_ocp_base.json')
         
         # Dimensions
-        self.n_states = 12
+        self.n_states = 13
         self.n_controls = 4
         self.N = self.params['N_horizon']
         
@@ -94,7 +94,7 @@ class AcadosBaseMPCSolver:
         
         # Dimensions
         N = self.params['N_horizon']
-        nx = 12  # states
+        nx = 13  # states: pos(3) + vel(3) + quat(4) + omega(3)
         nu = 4   # controls
         
         ocp.dims.N = N
@@ -191,13 +191,13 @@ class AcadosBaseMPCSolver:
         Solve MPC optimization problem
         
         Args:
-            x0: initial state [12]
-            x_ref_trajectory: reference trajectory [N+1 x 12]
+            x0: initial state [13]
+            x_ref_trajectory: reference trajectory [N+1 x 13]
             u_ref: reference control (optional) [N x 4]
         
         Returns:
             u_opt: optimal control sequence [N x 4]
-            x_pred: predicted state trajectory [N+1 x 12]
+            x_pred: predicted state trajectory [N+1 x 13]
             solve_info: dict with solver information
         """
         t_start = time.time()
@@ -323,7 +323,7 @@ def main():
     
     # Circular reference trajectory
     N = mpc_params['N_horizon']
-    x_ref = np.zeros((N + 1, 12))
+    x_ref = np.zeros((N + 1, 13))
     radius = 1.5
     speed = 0.3
     
@@ -354,7 +354,7 @@ def main():
     solve_times = []
     for i in range(n_trials):
         # Slightly perturb initial state
-        x0_perturbed = x0 + 0.01 * np.random.randn(12)
+        x0_perturbed = x0 + 0.01 * np.random.randn(13)
         x0_perturbed[6:10] /= np.linalg.norm(x0_perturbed[6:10])  # normalize quaternion
         
         _, _, info = solver.solve(x0_perturbed, x_ref)

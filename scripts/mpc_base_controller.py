@@ -5,7 +5,7 @@ MPC Base Controller for Quadrotor
 Simplified MPC controller that only controls the quadrotor base (no arm).
 Uses acados for real-time optimization.
 
-State vector (12):
+State vector (13):
     - position (3): x, y, z
     - velocity (3): vx, vy, vz
     - quaternion (4): qx, qy, qz, qw
@@ -70,8 +70,8 @@ class BaseStateEstimator:
     """
     
     def __init__(self):
-        # State: [pos(3), vel(3), quat(4), omega(3)]
-        self.state = np.zeros(12)
+        # State: [pos(3), vel(3), quat(4), omega(3)] = 13 states
+        self.state = np.zeros(13)
         self.state[6:10] = np.array([0, 0, 0, 1])  # Identity quaternion
         
         # Velocity integration
@@ -117,12 +117,12 @@ class BaseStateEstimator:
         self.last_time = current_time
     
     def get_state(self):
-        """Get current state estimate [12]"""
+        """Get current state estimate [13]"""
         return self.state.copy()
     
     def reset(self):
         """Reset state estimator"""
-        self.state = np.zeros(12)
+        self.state = np.zeros(13)
         self.state[6:10] = np.array([0, 0, 0, 1])
         self.last_time = None
 
@@ -218,7 +218,7 @@ class MPCBaseController(Node):
         self.get_logger().info(f'Control rate: {control_rate} Hz')
         self.get_logger().info(f'Prediction horizon: {mpc_params["N_horizon"]} steps')
         self.get_logger().info('Commands: start [mode], stop, plot, stats, quit')
-        self.get_logger().info('Modes: hover, circle, square, figure8, takeoff')
+        self.get_logger().info('Modes: hover, circle, square, figure8, takeoff, up')
     
     def imu_callback(self, msg: Imu):
         """Update state estimator with IMU data"""
@@ -253,9 +253,9 @@ class MPCBaseController(Node):
             horizon: number of steps
         
         Returns:
-            x_ref: reference trajectory [horizon+1 x 12]
+            x_ref: reference trajectory [horizon+1 x 13]
         """
-        x_ref = np.zeros((horizon + 1, 12))
+        x_ref = np.zeros((horizon + 1, 13))
         dt = self.mpc_solver.params['dt']
         
         for k in range(horizon + 1):
@@ -345,6 +345,21 @@ class MPCBaseController(Node):
                 x_ref[k, 3] = self.trajectory_radius * omega * np.cos(omega * t)
                 x_ref[k, 4] = self.trajectory_radius * omega * np.cos(2 * omega * t)
                 x_ref[k, 6:10] = [0, 0, 0, 1]
+            
+            elif self.trajectory_mode == 'up':
+                # Gradual ascent from ground level
+                ascent_speed = 0.5  # m/s vertical speed
+                target_height = self.trajectory_height
+                current_height = ascent_speed * t
+                
+                if current_height < target_height:
+                    x_ref[k, 2] = current_height
+                    x_ref[k, 5] = ascent_speed  # vz
+                else:
+                    x_ref[k, 2] = target_height
+                    x_ref[k, 5] = 0.0  # stop ascending
+                
+                x_ref[k, 6:10] = [0, 0, 0, 1]  # Level attitude
         
         return x_ref
     
@@ -520,7 +535,7 @@ def main(args=None):
         print("MPC Base Controller - Command Interface")
         print("=" * 50)
         print("Commands:")
-        print("  start [mode]  - Start trajectory (hover/circle/square/figure8/takeoff)")
+        print("  start [mode]  - Start trajectory (hover/circle/square/figure8/takeoff/up)")
         print("  stop          - Stop controller")
         print("  plot          - Plot logged data")
         print("  stats         - Show solver statistics")

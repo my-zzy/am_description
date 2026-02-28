@@ -2,19 +2,19 @@
 Acados Model for Quadrotor Base Control
 
 Simplified quadrotor dynamics model for base-only MPC control.
-12 states: position (3), velocity (3), quaternion (4), angular velocity (3)
+13 states: position (3), velocity (3), quaternion (4), angular velocity (3)
 4 controls: thrust (1), torques (3)
 """
 
 import numpy as np
-from casadi import SX, vertcat
+from casadi import SX, vertcat, horzcat
 
 
 def export_quadrotor_model():
     """
     Export simplified quadrotor model for acados
     
-    State vector (12 states):
+    State vector (13 states):
         - pos [3]: position in world frame (x, y, z)
         - vel [3]: velocity in world frame (vx, vy, vz)
         - quat [4]: quaternion (qx, qy, qz, qw) - body to world
@@ -68,7 +68,7 @@ def export_quadrotor_model():
     wz = SX.sym('wz')
     omega = vertcat(wx, wy, wz)
     
-    # Full state vector (12 states)
+    # Full state vector (13 states)
     x = vertcat(pos, vel, quat, omega)
     
     # --- Controls ---
@@ -82,23 +82,11 @@ def export_quadrotor_model():
     # --- Dynamics ---
     
     # Rotation matrix from quaternion (body to world)
-    # R = q_to_rotation_matrix(quat)
+    # Standard formula for q = [qx, qy, qz, qw]
     R = vertcat(
-        vertcat(
-            1 - 2*(qy**2 + qz**2),
-            2*(qx*qy + qz*qw),
-            2*(qx*qz - qy*qw)
-        ).T,
-        vertcat(
-            2*(qx*qy - qz*qw),
-            1 - 2*(qx**2 + qz**2),
-            2*(qy*qz + qx*qw)
-        ).T,
-        vertcat(
-            2*(qx*qz + qy*qw),
-            2*(qy*qz - qx*qw),
-            1 - 2*(qx**2 + qy**2)
-        ).T
+        horzcat(1 - 2*(qy**2 + qz**2), 2*(qx*qy - qz*qw), 2*(qx*qz + qy*qw)),
+        horzcat(2*(qx*qy + qz*qw), 1 - 2*(qx**2 + qz**2), 2*(qy*qz - qx*qw)),
+        horzcat(2*(qx*qz - qy*qw), 2*(qy*qz + qx*qw), 1 - 2*(qx**2 + qy**2))
     )
     
     # Thrust force in world frame (thrust along body z-axis)
@@ -171,7 +159,7 @@ def get_state_bounds():
     Get reasonable bounds for state variables
     
     Returns:
-        x_min, x_max: state bounds [12]
+        x_min, x_max: state bounds [13]
     """
     # Position bounds (workspace)
     pos_min = np.array([-10.0, -10.0, 0.0])

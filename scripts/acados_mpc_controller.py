@@ -272,6 +272,21 @@ class AcadosMPCController(Node):
                     -2.0 * r * self.trajectory_speed**2 * math.sin(2*ang),
                     0.0
                 ])
+            
+            elif self.trajectory_mode == 'up':
+                # Gradual ascent from ground level
+                ascent_speed = 0.5  # m/s vertical speed
+                target_height = self.trajectory_height
+                current_height = ascent_speed * t
+                
+                if current_height < target_height:
+                    pos = np.array([0.0, 0.0, current_height])
+                    vel = np.array([0.0, 0.0, ascent_speed])
+                else:
+                    pos = np.array([0.0, 0.0, target_height])
+                    vel = np.array([0.0, 0.0, 0.0])
+                acc = np.array([0.0, 0.0, 0.0])
+            
             else:
                 pos = np.array([0.0, 0.0, self.trajectory_height])
                 vel = np.array([0.0, 0.0, 0.0])
@@ -552,7 +567,7 @@ def main(args=None):
     
     def command_loop():
         controller.get_logger().info('\n=== Acados MPC Controller Commands ===')
-        controller.get_logger().info('  start <mode>  - Start trajectory (takeoff/hover/circle/square/figure8)')
+        controller.get_logger().info('  start <mode>  - Start trajectory (takeoff/hover/circle/square/figure8/up)')
         controller.get_logger().info('  stop          - Stop controller')
         controller.get_logger().info('  status        - Show current status')
         controller.get_logger().info('  stats         - Show performance statistics')
@@ -568,7 +583,7 @@ def main(args=None):
                 
                 if cmd[0] == 'start':
                     mode = cmd[1] if len(cmd) > 1 else 'circle'
-                    if mode in ['takeoff', 'hover', 'circle', 'square', 'figure8']:
+                    if mode in ['takeoff', 'hover', 'circle', 'square', 'figure8', 'up']:
                         controller.start_trajectory(mode)
                     else:
                         print(f"Unknown mode: {mode}")

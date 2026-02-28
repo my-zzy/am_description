@@ -2,7 +2,7 @@
 MPC Base Module for Quadrotor Control
 
 Simplified MPC controller for quadrotor base only (no arm).
-12 states: position (3), velocity (3), quaternion (4), angular velocity (3)
+13 states: position (3), velocity (3), quaternion (4), angular velocity (3)
 4 controls: thrust (1), torques (3)
 """
 

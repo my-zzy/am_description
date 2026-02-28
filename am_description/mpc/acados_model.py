@@ -5,7 +5,7 @@ Defines the symbolic dynamics model using CasADi for acados code generation.
 """
 
 import numpy as np
-from casadi import SX, vertcat, sin, cos, norm_2
+from casadi import SX, vertcat, horzcat, sin, cos, norm_2
 
 
 def export_aerial_manipulator_model():
@@ -83,22 +83,11 @@ def export_aerial_manipulator_model():
     # --- Dynamics ---
     
     # Rotation matrix from quaternion (body to world)
+    # q0=qx, q1=qy, q2=qz, q3=qw
     R = vertcat(
-        vertcat(
-            1 - 2*(q1**2 + q2**2),
-            2*(q0*q1 + q2*q3),
-            2*(q0*q2 - q1*q3)
-        ).T,
-        vertcat(
-            2*(q0*q1 - q2*q3),
-            1 - 2*(q0**2 + q2**2),
-            2*(q1*q2 + q0*q3)
-        ).T,
-        vertcat(
-            2*(q0*q2 + q1*q3),
-            2*(q1*q2 - q0*q3),
-            1 - 2*(q0**2 + q1**2)
-        ).T
+        horzcat(1 - 2*(q1**2 + q2**2), 2*(q0*q1 - q2*q3), 2*(q0*q2 + q1*q3)),
+        horzcat(2*(q0*q1 + q2*q3), 1 - 2*(q0**2 + q2**2), 2*(q1*q2 - q0*q3)),
+        horzcat(2*(q0*q2 - q1*q3), 2*(q1*q2 + q0*q3), 1 - 2*(q0**2 + q1**2))
     )
     
     # Thrust force in world frame
@@ -114,13 +103,14 @@ def export_aerial_manipulator_model():
     # Linear acceleration
     accel = (thrust_world + f_gravity + arm_effect_pos) / m_total
     
-    # Quaternion derivative (from angular velocity)
-    # dq/dt = 0.5 * Omega(omega) * q
-    omega_quat = vertcat(
-        0.5 * (-q0*wx - q1*wy - q2*wz),
-        0.5 * ( q3*wx - q2*wy + q1*wz),
-        0.5 * ( q2*wx + q3*wy - q0*wz),
-        0.5 * (-q1*wx + q0*wy + q3*wz)
+    # Quaternion derivative from angular velocity
+    # dq/dt = 0.5 * [0; omega] ⊗ q  (Hamilton convention)
+    # For q = [qx, qy, qz, qw] = [q0, q1, q2, q3]:
+    omega_quat = 0.5 * vertcat(
+        q3*wx - q2*wy + q1*wz,   # qx_dot
+        q2*wx + q3*wy - q0*wz,   # qy_dot
+        -q1*wx + q0*wy + q3*wz,  # qz_dot
+        -q0*wx - q1*wy - q2*wz   # qw_dot
     )
     
     # Angular acceleration (simplified, arm effects ignored)

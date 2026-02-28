@@ -110,20 +110,52 @@ Commands:
   <img src="fig/arm_influence_step_results.png" width="80%">
 </p>
 
-## MPC controller
+## MPC Controllers
+
+See doc
+[README_mpc](am_description/mpc/README_mpc.md)
+
+### Standard MPC (scipy-based)
+
+Full aerial manipulator MPC with 15 states (position, velocity, quaternion, angular velocity, arm joints) and 6 controls. Uses scipy optimization - too slow to run.
 
 ```bash
 ros2 run am_description mpc_controller.py
 ```
-
-See doc
-[README_mpc](am_description/mpc/README_mpc.md)
 
 To test mpc solver performance (scipy is too slow):
 ```bash
 cd ~/am_ws/src/am_description
 python -m am_description.mpc.mpc_solver
 ```
+
+
+### Acados MPC (full system)
+
+High-performance MPC using acados for real-time optimization. Same 15-state model as above but 10-100x faster.
+
+Acados install [INSTALL_ACADOS](am_description/mpc/INSTALL_ACADOS.md)
+
+```bash
+ros2 run am_description acados_mpc_controller.py
+```
+
+Commands: `start <mode>`, `stop`, `status`, `stats`, `plot`, `quit`  
+Modes: `takeoff`, `hover`, `circle`, `square`, `figure8`, `up`
+
+**TODO**
+
+### Acados MPC Base (quadrotor only)
+
+Simplified MPC for quadrotor base control only (no arm). 13 states, 4 controls. Fastest solver.
+
+```bash
+ros2 run am_description mpc_base_controller.py
+```
+
+Commands: `start <mode>`, `stop`, `plot`, `stats`, `quit`  
+Modes: `hover`, `circle`, `square`, `figure8`, `takeoff`, `up`
+
 
 
 ## Other terminal usage
