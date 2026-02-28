@@ -140,6 +140,8 @@ High-performance MPC using acados for real-time optimization. Same 15-state mode
 
 Acados install [INSTALL_ACADOS](am_description/mpc/INSTALL_ACADOS.md)
 
+MPC details [README](am_description/mpc_acados/README.md)
+
 ```bash
 ros2 run am_description acados_mpc_controller.py
 ```

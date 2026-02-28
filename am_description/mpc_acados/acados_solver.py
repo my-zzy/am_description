@@ -2,18 +2,30 @@
 Acados-based MPC Solver for Aerial Manipulator Whole-Body Control
 
 MPC solver for aerial manipulator using acados for real-time optimization.
-Uses simplified dynamics (ignoring arm dynamics) but provides whole-body
-control interface.
+Includes extended state and control vectors with arm joints.
 
-13 states (base only), 4 controls (base only).
-Arm joints are commanded separately with zero velocity.
+State vector (17 states):
+    - position (3): x, y, z
+    - velocity (3): vx, vy, vz
+    - quaternion (4): qx, qy, qz, qw
+    - angular velocity (3): wx, wy, wz
+    - arm joint positions (2): q1, q2
+    - arm joint velocities (2): dq1, dq2
+
+Control vector (6 controls):
+    - thrust: total thrust force (N)
+    - tau_x, tau_y, tau_z: body torques (Nm)
+    - ddq1, ddq2: arm joint accelerations (rad/s^2)
+
+Note: Arm controls are set to zero after solving to keep arm fixed.
 """
 
 import numpy as np
 import time
 import os
 from acados_template import AcadosOcp, AcadosOcpSolver
-from .acados_model import export_quadrotor_model, get_control_bounds, HOVER_THRUST
+from .acados_model import (export_quadrotor_model, get_control_bounds, HOVER_THRUST,
+                           N_STATES, N_CONTROLS, N_BASE_CONTROLS)
 
 
 class AcadosMPCSolver:
@@ -23,8 +35,8 @@ class AcadosMPCSolver:
     Features:
     - Real-time iteration (RTI) scheme for fast solving
     - Structure-exploiting QP solver (HPIPM)
-    - 13 states, 4 controls (simplified base-only dynamics)
-    - Whole-body interface (arm commands as zero velocity)
+    - 17 states (base + arm), 6 controls (base + arm)
+    - Arm controls set to zero after solving (keeping arm fixed)
     """
     
     def __init__(self, params=None):
@@ -39,15 +51,22 @@ class AcadosMPCSolver:
             'N_horizon': 20,              # Prediction horizon
             'dt': 0.05,                   # Time step (50ms)
             
-            # State cost weights
+            # Base state cost weights
             'Q_pos': 10.0,                # Position tracking
             'Q_vel': 1.0,                 # Velocity tracking
             'Q_att': 5.0,                 # Attitude tracking
             'Q_omega': 0.5,               # Angular velocity tracking
             
-            # Control cost weights
+            # Arm state cost weights (keep small since we want arm fixed)
+            'Q_arm_pos': 1.0,             # Arm joint position tracking
+            'Q_arm_vel': 0.1,             # Arm joint velocity tracking
+            
+            # Base control cost weights
             'R_thrust': 0.01,             # Thrust cost
             'R_torque': 0.1,              # Torque cost
+            
+            # Arm control cost weights
+            'R_arm_acc': 0.01,            # Arm acceleration cost
             
             # Terminal cost factor
             'Q_terminal_factor': 2.0,
@@ -76,8 +95,9 @@ class AcadosMPCSolver:
         self.solver = AcadosOcpSolver(self.ocp, json_file='acados_ocp_am.json')
         
         # Dimensions
-        self.n_states = 13
-        self.n_controls = 4
+        self.n_states = N_STATES       # 17 states
+        self.n_controls = N_CONTROLS   # 6 controls
+        self.n_base_controls = N_BASE_CONTROLS  # 4 base controls
         self.N = self.params['N_horizon']
         
         # Previous solution for warm starting
@@ -103,8 +123,8 @@ class AcadosMPCSolver:
         
         # Dimensions
         N = self.params['N_horizon']
-        nx = 13  # states: pos(3) + vel(3) + quat(4) + omega(3)
-        nu = 4   # controls
+        nx = N_STATES   # 17 states: pos(3) + vel(3) + quat(4) + omega(3) + arm_pos(2) + arm_vel(2)
+        nu = N_CONTROLS # 6 controls: thrust(1) + torques(3) + arm_acc(2)
         
         ocp.dims.N = N
         
@@ -113,26 +133,36 @@ class AcadosMPCSolver:
         
         # --- Cost function (Linear Least Squares) ---
         
-        # State cost matrix Q
+        # Base state cost weights
         Q_pos = self.params['Q_pos']
         Q_vel = self.params['Q_vel']
         Q_att = self.params['Q_att']
         Q_omega = self.params['Q_omega']
         
+        # Arm state cost weights
+        Q_arm_pos = self.params['Q_arm_pos']
+        Q_arm_vel = self.params['Q_arm_vel']
+        
+        # State cost matrix Q (17x17)
         Q = np.diag([
             Q_pos, Q_pos, Q_pos,           # Position (x, y, z)
             Q_vel, Q_vel, Q_vel,           # Velocity
             Q_att, Q_att, Q_att, Q_att,    # Quaternion
-            Q_omega, Q_omega, Q_omega      # Angular velocity
+            Q_omega, Q_omega, Q_omega,     # Angular velocity
+            Q_arm_pos, Q_arm_pos,          # Arm joint positions
+            Q_arm_vel, Q_arm_vel           # Arm joint velocities
         ])
         
-        # Control cost matrix R
+        # Control cost weights
         R_thrust = self.params['R_thrust']
         R_torque = self.params['R_torque']
+        R_arm_acc = self.params['R_arm_acc']
         
+        # Control cost matrix R (6x6)
         R = np.diag([
             R_thrust,                       # Thrust
-            R_torque, R_torque, R_torque   # Torques
+            R_torque, R_torque, R_torque,  # Torques
+            R_arm_acc, R_arm_acc           # Arm accelerations
         ])
         
         # Cost type
@@ -195,18 +225,19 @@ class AcadosMPCSolver:
         
         return ocp
     
-    def solve(self, x0, x_ref_trajectory, u_ref=None):
+    def solve(self, x0, x_ref_trajectory, u_ref=None, zero_arm_controls=True):
         """
         Solve MPC optimization problem
         
         Args:
-            x0: initial state [13] (base state only)
-            x_ref_trajectory: reference trajectory [N+1 x 13]
-            u_ref: reference control (optional) [N x 4]
+            x0: initial state [17] (full state with arm)
+            x_ref_trajectory: reference trajectory [N+1 x 17]
+            u_ref: reference control (optional) [N x 6]
+            zero_arm_controls: if True, set arm accelerations to zero after solving
         
         Returns:
-            u_opt: optimal control sequence [N x 4]
-            x_pred: predicted state trajectory [N+1 x 13]
+            u_opt: optimal control sequence [N x 6]
+            x_pred: predicted state trajectory [N+1 x 17]
             solve_info: dict with solver information
         """
         t_start = time.time()
@@ -217,9 +248,9 @@ class AcadosMPCSolver:
         self.solver.set(0, 'lbx', x0)
         self.solver.set(0, 'ubx', x0)
         
-        # Default u_ref (hover thrust, zero torques)
+        # Default u_ref (hover thrust, zero torques, zero arm accelerations)
         if u_ref is None:
-            u_ref_default = np.array([HOVER_THRUST, 0.0, 0.0, 0.0])
+            u_ref_default = np.array([HOVER_THRUST, 0.0, 0.0, 0.0, 0.0, 0.0])
         else:
             u_ref_default = u_ref[0] if len(u_ref.shape) > 1 else u_ref
         
@@ -265,6 +296,10 @@ class AcadosMPCSolver:
         self.x_prev = x_pred.copy()
         self.u_prev = u_opt.copy()
         
+        # Zero out arm controls if requested (keep arm fixed)
+        if zero_arm_controls:
+            u_opt[:, 4:6] = 0.0  # Set arm accelerations to zero
+        
         # Get cost
         cost = self.solver.get_cost()
         
@@ -286,12 +321,36 @@ class AcadosMPCSolver:
     
     def get_arm_command(self):
         """
-        Get arm command (zero velocity to keep arm fixed)
+        Get arm command (zero acceleration to keep arm fixed)
         
         Returns:
-            arm_vel: arm joint velocities [2] (zeros)
+            arm_acc: arm joint accelerations [2] (zeros)
         """
         return np.array([0.0, 0.0])
+    
+    def get_base_control(self, u):
+        """
+        Extract base controls from full control vector
+        
+        Args:
+            u: full control vector [6]
+        
+        Returns:
+            base_control: [thrust, tau_x, tau_y, tau_z]
+        """
+        return u[:4]
+    
+    def get_arm_control(self, u):
+        """
+        Extract arm controls from full control vector
+        
+        Args:
+            u: full control vector [6]
+        
+        Returns:
+            arm_control: [ddq1, ddq2] (joint accelerations)
+        """
+        return u[4:6]
     
     def __del__(self):
         """Cleanup"""
@@ -329,17 +388,19 @@ def main():
     print(f"  Time step: {mpc_params['dt']} s")
     print(f"  Solver type: {mpc_params['nlp_solver_type']}")
     
-    # Initial state (hovering at 2m)
+    # Initial state (hovering at 2m, arm at neutral)
     x0 = np.array([
-        0.0, 0.0, 2.0,     # position
-        0.0, 0.0, 0.0,     # velocity
+        0.0, 0.0, 2.0,       # position
+        0.0, 0.0, 0.0,       # velocity
         0.0, 0.0, 0.0, 1.0,  # quaternion [x,y,z,w]
-        0.0, 0.0, 0.0      # angular velocity
+        0.0, 0.0, 0.0,       # angular velocity
+        0.0, 0.0,            # arm joint positions
+        0.0, 0.0             # arm joint velocities
     ])
     
     # Circular reference trajectory
     N = mpc_params['N_horizon']
-    x_ref = np.zeros((N + 1, 13))
+    x_ref = np.zeros((N + 1, N_STATES))  # 17 states
     radius = 1.5
     speed = 0.3
     
@@ -351,7 +412,8 @@ def main():
         x_ref[k, 2] = 2.0                          # z
         x_ref[k, 3] = -radius * speed * np.sin(theta)  # vx
         x_ref[k, 4] = radius * speed * np.cos(theta)   # vy
-        x_ref[k, 9] = 1.0                          # qw
+        x_ref[k, 9] = 1.0                          # qw (identity quaternion)
+        # Arm states remain at zero (neutral position)
     
     print(f"\nTest Scenario: Circular trajectory (r={radius}m)")
     
@@ -361,8 +423,8 @@ def main():
     print(f"  Time: {info['solve_time']*1000:.1f} ms")
     print(f"  Success: {info['success']}")
     print(f"  Cost: {info['cost']:.2f}")
-    print(f"  First control: thrust={u_opt[0, 0]:.2f}N, torque={u_opt[0, 1:]}Nm")
-    print(f"  Arm command: {solver.get_arm_command()}")
+    print(f"  First control: thrust={u_opt[0, 0]:.2f}N, torques={u_opt[0, 1:4]}, arm_acc={u_opt[0, 4:6]}")
+    print(f"  Arm command (zero): {solver.get_arm_command()}")
     
     # Benchmark
     n_trials = 50
@@ -371,7 +433,7 @@ def main():
     solve_times = []
     for i in range(n_trials):
         # Slightly perturb initial state
-        x0_perturbed = x0 + 0.01 * np.random.randn(13)
+        x0_perturbed = x0 + 0.01 * np.random.randn(N_STATES)
         x0_perturbed[6:10] /= np.linalg.norm(x0_perturbed[6:10])  # normalize quaternion
         
         _, _, info = solver.solve(x0_perturbed, x_ref)

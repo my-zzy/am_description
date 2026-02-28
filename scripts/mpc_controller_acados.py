@@ -3,26 +3,36 @@
 MPC Controller for Aerial Manipulator using Acados
 
 Whole-body MPC controller that uses acados for real-time optimization.
-Controls the quadrotor base with MPC while keeping arm joints fixed.
+The controller tracks reference trajectories for the quadrotor base while
+keeping arm joints fixed (arm accelerations zeroed post-solve).
 
 This controller:
-- Uses simplified dynamics model (ignoring arm dynamics)
+- Uses whole-body state representation (base + arm)
+- Solves MPC with SQP_RTI for real-time performance
 - Controls the base with thrust and torques
-- Publishes zero velocity commands to arm joints (keeping them fixed)
-- Subscribes to both IMU and joint states (whole-body awareness)
+- Includes arm states in optimization but zeroes arm controls after solve
+- Subscribes to IMU and joint states for full state estimation
 
-State vector (13 for base):
-    - position (3): x, y, z
-    - velocity (3): vx, vy, vz
-    - quaternion (4): qx, qy, qz, qw
-    - angular velocity (3): wx, wy, wz
+State vector (17 states):
+    Base states [0:13]:
+        - position (3): x, y, z [m]
+        - velocity (3): vx, vy, vz [m/s]
+        - quaternion (4): qx, qy, qz, qw
+        - angular velocity (3): wx, wy, wz [rad/s]
+    Arm states [13:17]:
+        - joint positions (2): q1, q2 [rad]
+        - joint velocities (2): dq1, dq2 [rad/s]
 
-Control vector (4 for base):
-    - thrust: total thrust force (N)
-    - tau_x, tau_y, tau_z: body torques (Nm)
+Control vector (6 controls):
+    Base controls [0:4]:
+        - thrust: total thrust force [N]
+        - tau_x, tau_y, tau_z: body torques [Nm]
+    Arm controls [4:6]:
+        - ddq1, ddq2: joint accelerations [rad/s^2] (zeroed post-solve)
 
-Arm controls:
-    - joint velocities: always zero (fixed arm)
+Dynamics:
+    - Base: 6-DOF rigid body with thrust along body z-axis
+    - Arm: Simple double integrator (decoupled from base for simplicity)
 """
 
 import rclpy
@@ -37,7 +47,10 @@ from collections import deque
 import matplotlib.pyplot as plt
 
 from am_description.mpc_acados.acados_solver import AcadosMPCSolver
-from am_description.mpc_acados.acados_model import HOVER_THRUST, MASS, GRAVITY
+from am_description.mpc_acados.acados_model import (
+    HOVER_THRUST, MASS, GRAVITY,
+    N_STATES, N_CONTROLS, N_BASE_CONTROLS
+)
 
 
 def quaternion_to_euler(q):
@@ -78,7 +91,8 @@ class WholeBodyStateEstimator:
     """
     State estimator for aerial manipulator (whole-body)
     
-    Estimates base state from IMU and tracks arm joint positions.
+    Estimates base state from IMU and tracks arm joint positions/velocities.
+    Full state vector: [base(13), arm_pos(2), arm_vel(2)] = 17 states
     """
     
     def __init__(self):
@@ -86,8 +100,11 @@ class WholeBodyStateEstimator:
         self.base_state = np.zeros(13)
         self.base_state[6:10] = np.array([0, 0, 0, 1])  # Identity quaternion
         
-        # Arm state: joint positions
+        # Arm state: joint positions and velocities
         self.arm_positions = np.array([0.0, 0.0])
+        self.arm_velocities = np.array([0.0, 0.0])
+        self.last_arm_positions = None
+        self.last_arm_time = None
         
         # Velocity integration
         self.last_time = None
@@ -131,32 +148,59 @@ class WholeBodyStateEstimator:
             self.base_state[0:3] += self.base_state[3:6] * dt
         self.last_time = current_time
     
-    def update_joints(self, joint_positions):
+    def update_joints(self, joint_positions, joint_velocities=None):
         """
-        Update arm joint positions
+        Update arm joint positions and velocities
         
         Args:
             joint_positions: joint positions [2]
+            joint_velocities: joint velocities [2] (optional, computed if None)
         """
-        self.arm_positions = np.array(joint_positions[:2])
+        new_positions = np.array(joint_positions[:2])
+        
+        if joint_velocities is not None:
+            # Use provided velocities
+            self.arm_velocities = np.array(joint_velocities[:2])
+        else:
+            # Estimate velocities from position differences
+            current_time = time.time()
+            if self.last_arm_positions is not None and self.last_arm_time is not None:
+                dt = current_time - self.last_arm_time
+                if dt > 0.001:  # Avoid division by small dt
+                    self.arm_velocities = (new_positions - self.last_arm_positions) / dt
+            self.last_arm_positions = new_positions.copy()
+            self.last_arm_time = current_time
+        
+        self.arm_positions = new_positions
     
     def get_base_state(self):
         """Get current base state estimate [13]"""
         return self.base_state.copy()
     
-    def get_arm_state(self):
+    def get_arm_positions(self):
         """Get current arm joint positions [2]"""
         return self.arm_positions.copy()
     
+    def get_arm_velocities(self):
+        """Get current arm joint velocities [2]"""
+        return self.arm_velocities.copy()
+    
+    def get_arm_state(self):
+        """Get current arm state [4] = [positions(2), velocities(2)]"""
+        return np.concatenate([self.arm_positions, self.arm_velocities])
+    
     def get_full_state(self):
-        """Get full state [15] = base(13) + arm(2)"""
-        return np.concatenate([self.base_state, self.arm_positions])
+        """Get full state [17] = base(13) + arm_pos(2) + arm_vel(2)"""
+        return np.concatenate([self.base_state, self.arm_positions, self.arm_velocities])
     
     def reset(self):
         """Reset state estimator"""
         self.base_state = np.zeros(13)
         self.base_state[6:10] = np.array([0, 0, 0, 1])
         self.arm_positions = np.array([0.0, 0.0])
+        self.arm_velocities = np.array([0.0, 0.0])
+        self.last_arm_positions = None
+        self.last_arm_time = None
         self.last_time = None
 
 
@@ -308,7 +352,11 @@ class MPCControllerAcados(Node):
         """Update state estimator with joint encoder data"""
         if len(msg.position) >= 2:
             joint_positions = np.array(msg.position[0:2])
-            self.state_estimator.update_joints(joint_positions)
+            # Extract velocities if available, otherwise use zeros
+            joint_velocities = np.zeros(2)
+            if hasattr(msg, 'velocity') and len(msg.velocity) >= 2:
+                joint_velocities = np.array(msg.velocity[0:2])
+            self.state_estimator.update_joints(joint_positions, joint_velocities)
             self.joints_received = True
     
     def generate_reference_trajectory(self, current_time, horizon):
@@ -320,9 +368,10 @@ class MPCControllerAcados(Node):
             horizon: number of steps
         
         Returns:
-            x_ref: reference trajectory [horizon+1 x 13]
+            x_ref: reference trajectory [horizon+1 x 17]
+                   Base states [0:13] + arm_pos [13:15] + arm_vel [15:17]
         """
-        x_ref = np.zeros((horizon + 1, 13))
+        x_ref = np.zeros((horizon + 1, N_STATES))  # 17 states
         dt = self.mpc_solver.params['dt']
         
         for k in range(horizon + 1):
@@ -440,33 +489,34 @@ class MPCControllerAcados(Node):
             return
         
         # Note: We proceed even without joint state since we're keeping arm fixed
-        # and only using base state for MPC
+        # Arm states will be zeros if not received
         
         if self.start_log_time is None:
             self.start_log_time = time.time()
         
-        # Get current base state (for MPC)
-        x_current = self.state_estimator.get_base_state()
+        # Get full state (17 states: base + arm)
+        x_current = self.state_estimator.get_full_state()
         
         # Generate reference trajectory
         N = self.mpc_solver.N
         x_ref = self.generate_reference_trajectory(self.trajectory_time, N)
         
-        # Solve MPC
+        # Solve MPC (with arm controls zeroed post-solve)
         solve_start = time.time()
         try:
-            u_opt, x_pred, info = self.mpc_solver.solve(x_current, x_ref)
+            u_opt, x_pred, info = self.mpc_solver.solve(x_current, x_ref, zero_arm_controls=True)
             solve_time = time.time() - solve_start
             self.solve_times.append(solve_time * 1000)
             
             if not info['success']:
                 self.get_logger().warn(f'MPC solve failed: status={info["status"]}')
             
-            # Apply first control (base)
-            thrust = u_opt[0, 0]
-            tau_x = u_opt[0, 1]
-            tau_y = u_opt[0, 2]
-            tau_z = u_opt[0, 3]
+            # Apply first control - base controls (u_opt is 6-dim: thrust, tau_x, tau_y, tau_z, ddq1, ddq2)
+            thrust = u_opt[0, 0]  # CTRL_THRUST
+            tau_x = u_opt[0, 1]   # CTRL_TAU_X
+            tau_y = u_opt[0, 2]   # CTRL_TAU_Y
+            tau_z = u_opt[0, 3]   # CTRL_TAU_Z
+            # u_opt[0, 4:6] are arm accelerations (zeroed by zero_arm_controls=True)
             
             # Publish base wrench
             msg = Wrench()
