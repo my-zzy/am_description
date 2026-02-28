@@ -1,25 +1,30 @@
 """
-Acados-based MPC Solver for Aerial Manipulator
+Acados-based MPC Solver for Aerial Manipulator Whole-Body Control
 
-High-performance MPC solver using acados with real-time iteration scheme.
-Provides 10-100x speedup compared to scipy-based solver.
+MPC solver for aerial manipulator using acados for real-time optimization.
+Uses simplified dynamics (ignoring arm dynamics) but provides whole-body
+control interface.
+
+13 states (base only), 4 controls (base only).
+Arm joints are commanded separately with zero velocity.
 """
 
 import numpy as np
+import time
+import os
 from acados_template import AcadosOcp, AcadosOcpSolver
-from .acados_model import export_aerial_manipulator_model, get_state_bounds, get_control_bounds
-from .utils import quaternion_to_euler
+from .acados_model import export_quadrotor_model, get_control_bounds, HOVER_THRUST
 
 
 class AcadosMPCSolver:
     """
-    High-performance MPC solver using acados
+    MPC solver for aerial manipulator whole-body control using acados
     
     Features:
+    - Real-time iteration (RTI) scheme for fast solving
     - Structure-exploiting QP solver (HPIPM)
-    - Real-time iteration (RTI) scheme
-    - Automatic C code generation
-    - 10-100x faster than scipy
+    - 13 states, 4 controls (simplified base-only dynamics)
+    - Whole-body interface (arm commands as zero velocity)
     """
     
     def __init__(self, params=None):
@@ -31,28 +36,27 @@ class AcadosMPCSolver:
         """
         # Default parameters
         self.params = {
-            'N_horizon': 10,         # Prediction horizon
-            'dt': 0.05,              # Time step (50ms)
+            'N_horizon': 20,              # Prediction horizon
+            'dt': 0.05,                   # Time step (50ms)
             
-            # Cost weights
-            'Q_pos': 10.0,
-            'Q_vel': 1.0,
-            'Q_att': 5.0,
-            'Q_omega': 0.5,
-            'Q_arm': 2.0,
-            'R_thrust': 0.01,
-            'R_torque': 0.1,
-            'R_arm': 0.05,
-            'Rd_rate': 0.5,
+            # State cost weights
+            'Q_pos': 10.0,                # Position tracking
+            'Q_vel': 1.0,                 # Velocity tracking
+            'Q_att': 5.0,                 # Attitude tracking
+            'Q_omega': 0.5,               # Angular velocity tracking
             
-            # Terminal cost multiplier
+            # Control cost weights
+            'R_thrust': 0.01,             # Thrust cost
+            'R_torque': 0.1,              # Torque cost
+            
+            # Terminal cost factor
             'Q_terminal_factor': 2.0,
             
             # Solver options
-            'qp_solver': 'PARTIAL_CONDENSING_HPIPM',  # Fast QP solver
-            'hessian_approx': 'GAUSS_NEWTON',          # or 'EXACT'
-            'integrator_type': 'ERK',                   # Explicit RK4
-            'nlp_solver_type': 'SQP_RTI',              # Real-time iteration
+            'qp_solver': 'PARTIAL_CONDENSING_HPIPM',
+            'hessian_approx': 'GAUSS_NEWTON',
+            'integrator_type': 'ERK',
+            'nlp_solver_type': 'SQP_RTI',
             'qp_solver_iter_max': 50,
             'nlp_solver_tol_stat': 1e-3,
             'nlp_solver_tol_eq': 1e-3,
@@ -64,22 +68,25 @@ class AcadosMPCSolver:
         if params is not None:
             self.params.update(params)
         
-        # Build acados OCP
+        # Build OCP
         self.ocp = self._build_ocp()
         
-        # Create solver
-        self.solver = AcadosOcpSolver(self.ocp, json_file='acados_ocp.json')
+        # Create solver (generates C code on first run)
+        # Use unique JSON file name to avoid conflicts with other acados solvers
+        self.solver = AcadosOcpSolver(self.ocp, json_file='acados_ocp_am.json')
         
-        # State dimensions
-        self.n_states = 15
-        self.n_controls = 6
+        # Dimensions
+        self.n_states = 13
+        self.n_controls = 4
         self.N = self.params['N_horizon']
         
         # Previous solution for warm starting
         self.x_prev = None
         self.u_prev = None
         
-        print(f"Acados MPC solver initialized (N={self.N}, dt={self.params['dt']}s)")
+        print(f"Acados MPC solver for aerial manipulator initialized")
+        print(f"  Horizon: N={self.N}, dt={self.params['dt']}s")
+        print(f"  Solver: {self.params['nlp_solver_type']}")
     
     def _build_ocp(self):
         """
@@ -88,68 +95,67 @@ class AcadosMPCSolver:
         Returns:
             ocp: AcadosOcp object
         """
-        # Create OCP
         ocp = AcadosOcp()
         
         # Get model
-        model = export_aerial_manipulator_model()
+        model = export_quadrotor_model()
         ocp.model = model
         
         # Dimensions
         N = self.params['N_horizon']
-        nx = model.x.size()[0]
-        nu = model.u.size()[0]
+        nx = 13  # states: pos(3) + vel(3) + quat(4) + omega(3)
+        nu = 4   # controls
         
         ocp.dims.N = N
         
         # Time horizon
         ocp.solver_options.tf = N * self.params['dt']
         
-        # --- Cost function ---
+        # --- Cost function (Linear Least Squares) ---
         
-        # Stage cost (running cost)
+        # State cost matrix Q
         Q_pos = self.params['Q_pos']
         Q_vel = self.params['Q_vel']
         Q_att = self.params['Q_att']
         Q_omega = self.params['Q_omega']
-        Q_arm = self.params['Q_arm']
+        
+        Q = np.diag([
+            Q_pos, Q_pos, Q_pos,           # Position (x, y, z)
+            Q_vel, Q_vel, Q_vel,           # Velocity
+            Q_att, Q_att, Q_att, Q_att,    # Quaternion
+            Q_omega, Q_omega, Q_omega      # Angular velocity
+        ])
+        
+        # Control cost matrix R
         R_thrust = self.params['R_thrust']
         R_torque = self.params['R_torque']
-        R_arm = self.params['R_arm']
-        Rd_rate = self.params['Rd_rate']
         
-        # State cost matrix
-        Q = np.zeros((nx, nx))
-        Q[0:3, 0:3] = Q_pos * np.eye(3)      # Position
-        Q[3:6, 3:6] = Q_vel * np.eye(3)      # Velocity
-        Q[6:10, 6:10] = Q_att * np.eye(4)    # Quaternion
-        Q[10:13, 10:13] = Q_omega * np.eye(3)  # Angular velocity
-        Q[13:15, 13:15] = Q_arm * np.eye(2)  # Arm joints
+        R = np.diag([
+            R_thrust,                       # Thrust
+            R_torque, R_torque, R_torque   # Torques
+        ])
         
-        # Control cost matrix
-        R = np.zeros((nu, nu))
-        R[0, 0] = R_thrust                   # Thrust
-        R[1:4, 1:4] = R_torque * np.eye(3)   # Torques
-        R[4:6, 4:6] = R_arm * np.eye(2)      # Arm velocities
-        
+        # Cost type
         ocp.cost.cost_type = 'LINEAR_LS'
         ocp.cost.cost_type_e = 'LINEAR_LS'
         
-        # Reference tracking: minimize ||Vx*x + Vu*u - y_ref||^2
-        ny = nx + nu  # Output dimension (state + control)
+        # Output dimension (state + control)
+        ny = nx + nu
+        
+        # Output matrices
         ocp.cost.Vx = np.zeros((ny, nx))
         ocp.cost.Vx[:nx, :nx] = np.eye(nx)
         
         ocp.cost.Vu = np.zeros((ny, nu))
         ocp.cost.Vu[nx:, :] = np.eye(nu)
         
-        # Cost matrix
+        # Combined cost matrix
         W = np.zeros((ny, ny))
         W[:nx, :nx] = Q
         W[nx:, nx:] = R
         ocp.cost.W = W
         
-        # Reference (will be set at runtime)
+        # Reference (set at runtime)
         ocp.cost.yref = np.zeros((ny,))
         
         # Terminal cost
@@ -160,19 +166,13 @@ class AcadosMPCSolver:
         
         # --- Constraints ---
         
-        # Control constraints
+        # Control bounds
         u_min, u_max = get_control_bounds()
         ocp.constraints.lbu = u_min
         ocp.constraints.ubu = u_max
         ocp.constraints.idxbu = np.arange(nu)
         
-        # State constraints (optional)
-        # x_min, x_max = get_state_bounds()
-        # ocp.constraints.lbx = x_min
-        # ocp.constraints.ubx = x_max
-        # ocp.constraints.idxbx = np.arange(nx)
-        
-        # Initial state constraint (will be set at runtime)
+        # Initial state constraint (set at runtime)
         ocp.constraints.x0 = np.zeros(nx)
         
         # --- Solver options ---
@@ -187,11 +187,11 @@ class AcadosMPCSolver:
         ocp.solver_options.nlp_solver_tol_ineq = self.params['nlp_solver_tol_ineq']
         ocp.solver_options.nlp_solver_tol_comp = self.params['nlp_solver_tol_comp']
         
-        # Real-time iteration options
+        # RTI options
         if self.params['nlp_solver_type'] == 'SQP_RTI':
-            ocp.solver_options.nlp_solver_max_iter = 1  # RTI: exactly 1 iteration
+            ocp.solver_options.nlp_solver_max_iter = 1
         else:
-            ocp.solver_options.nlp_solver_max_iter = 20
+            ocp.solver_options.nlp_solver_max_iter = 100
         
         return ocp
     
@@ -200,122 +200,122 @@ class AcadosMPCSolver:
         Solve MPC optimization problem
         
         Args:
-            x0: initial state [15,]
-            x_ref_trajectory: reference trajectory [N+1 x 15]
-            u_ref: reference control (optional) [N x 6]
+            x0: initial state [13] (base state only)
+            x_ref_trajectory: reference trajectory [N+1 x 13]
+            u_ref: reference control (optional) [N x 4]
         
         Returns:
-            u_opt: optimal control sequence [N x 6]
-            x_pred: predicted state trajectory [N+1 x 15]
+            u_opt: optimal control sequence [N x 4]
+            x_pred: predicted state trajectory [N+1 x 13]
             solve_info: dict with solver information
         """
-        import time
+        t_start = time.time()
         
         N = self.params['N_horizon']
         
-        # Set initial state
+        # Set initial state constraint
         self.solver.set(0, 'lbx', x0)
         self.solver.set(0, 'ubx', x0)
         
-        # Set reference trajectory
-        u_ref_default = np.zeros(self.n_controls)
+        # Default u_ref (hover thrust, zero torques)
+        if u_ref is None:
+            u_ref_default = np.array([HOVER_THRUST, 0.0, 0.0, 0.0])
+        else:
+            u_ref_default = u_ref[0] if len(u_ref.shape) > 1 else u_ref
         
+        # Set reference trajectory for each stage
         for k in range(N):
-            # State reference
-            x_ref_k = x_ref_trajectory[min(k, len(x_ref_trajectory)-1)]
+            # Get reference state at stage k
+            x_ref_k = x_ref_trajectory[k] if k < len(x_ref_trajectory) else x_ref_trajectory[-1]
             
-            # Control reference (zero or provided)
+            # Get reference control
             if u_ref is not None and k < len(u_ref):
                 u_ref_k = u_ref[k]
             else:
                 u_ref_k = u_ref_default
             
-            # Combined reference
+            # Combined reference [x; u]
             y_ref = np.concatenate([x_ref_k, u_ref_k])
             self.solver.set(k, 'yref', y_ref)
         
         # Terminal reference
-        x_ref_N = x_ref_trajectory[min(N, len(x_ref_trajectory)-1)]
-        self.solver.set(N, 'yref', x_ref_N)
+        x_ref_e = x_ref_trajectory[-1] if len(x_ref_trajectory) > N else x_ref_trajectory[-1]
+        self.solver.set(N, 'yref', x_ref_e)
         
         # Warm start with previous solution
         if self.x_prev is not None and self.u_prev is not None:
             for k in range(N):
-                if k < len(self.x_prev) - 1:
-                    self.solver.set(k, 'x', self.x_prev[k+1])
-                    self.solver.set(k, 'u', self.u_prev[min(k+1, len(self.u_prev)-1)])
+                self.solver.set(k, 'x', self.x_prev[min(k+1, N)])
+                self.solver.set(k, 'u', self.u_prev[min(k, N-1)])
+            self.solver.set(N, 'x', self.x_prev[N])
         
         # Solve
-        t_start = time.time()
         status = self.solver.solve()
-        solve_time = time.time() - t_start
         
-        # Extract solution
+        # Get solution
         u_opt = np.zeros((N, self.n_controls))
-        x_pred = np.zeros((N+1, self.n_states))
+        x_pred = np.zeros((N + 1, self.n_states))
         
         for k in range(N):
-            u_opt[k] = self.solver.get(k, 'u')
             x_pred[k] = self.solver.get(k, 'x')
+            u_opt[k] = self.solver.get(k, 'u')
         x_pred[N] = self.solver.get(N, 'x')
         
         # Store for warm starting
-        self.x_prev = x_pred
-        self.u_prev = u_opt
+        self.x_prev = x_pred.copy()
+        self.u_prev = u_opt.copy()
         
-        # Get solver statistics
-        stats = self.solver.get_stats('statistics')
+        # Get cost
+        cost = self.solver.get_cost()
         
-        # Solve info
+        t_solve = time.time() - t_start
+        
         solve_info = {
             'success': status == 0,
             'status': status,
-            'iterations': stats[0] if len(stats) > 0 else 0,
-            'cost': self.solver.get_cost(),
-            'computation_time': solve_time,
-            'message': f'Acados status: {status}',
-            'cost_breakdown': {}  # Not available in acados
+            'cost': cost,
+            'solve_time': t_solve,
         }
         
         return u_opt, x_pred, solve_info
     
     def reset(self):
-        """Reset solver (clear warm start)"""
+        """Reset solver state (warm start)"""
         self.x_prev = None
         self.u_prev = None
     
+    def get_arm_command(self):
+        """
+        Get arm command (zero velocity to keep arm fixed)
+        
+        Returns:
+            arm_vel: arm joint velocities [2] (zeros)
+        """
+        return np.array([0.0, 0.0])
+    
     def __del__(self):
         """Cleanup"""
-        try:
-            if hasattr(self, 'solver'):
-                del self.solver
-        except:
-            pass
+        pass
 
 
 def main():
     """
     Test acados MPC solver performance
     """
-    import time
-    from .utils import euler_to_quaternion
-    
     print("=" * 60)
-    print("Acados MPC Solver Performance Test")
+    print("Acados MPC Solver for Aerial Manipulator - Performance Test")
     print("=" * 60)
     
     # Create solver
     mpc_params = {
-        'N_horizon': 10,
+        'N_horizon': 20,
         'dt': 0.05,
         'Q_pos': 10.0,
         'Q_vel': 1.0,
         'Q_att': 5.0,
         'Q_omega': 0.5,
-        'Q_arm': 2.0,
         'R_thrust': 0.01,
         'R_torque': 0.1,
-        'R_arm': 0.05,
         'nlp_solver_type': 'SQP_RTI',
     }
     
@@ -323,58 +323,59 @@ def main():
     solver = AcadosMPCSolver(mpc_params)
     
     print(f"\nMPC Configuration:")
+    print(f"  States: {solver.n_states}")
+    print(f"  Controls: {solver.n_controls}")
     print(f"  Prediction horizon: {mpc_params['N_horizon']} steps")
     print(f"  Time step: {mpc_params['dt']} s")
     print(f"  Solver type: {mpc_params['nlp_solver_type']}")
     
-    # Define initial state
-    x0 = np.array([0, 0, 2.0,  # pos
-                   0, 0, 0,    # vel
-                   0, 0, 0, 1, # quat
-                   0, 0, 0,    # omega
-                   0, 0])      # q_arm
+    # Initial state (hovering at 2m)
+    x0 = np.array([
+        0.0, 0.0, 2.0,     # position
+        0.0, 0.0, 0.0,     # velocity
+        0.0, 0.0, 0.0, 1.0,  # quaternion [x,y,z,w]
+        0.0, 0.0, 0.0      # angular velocity
+    ])
     
-    # Define circular reference trajectory
+    # Circular reference trajectory
     N = mpc_params['N_horizon']
-    x_ref = np.zeros((N + 1, 15))
+    x_ref = np.zeros((N + 1, 13))
     radius = 1.5
     speed = 0.3
     
     for k in range(N + 1):
         t = k * mpc_params['dt']
-        ang = t * speed
-        
-        x_ref[k, 0:3] = [radius * np.cos(ang), radius * np.sin(ang), 2.0]
-        x_ref[k, 3:6] = [-radius * speed * np.sin(ang), radius * speed * np.cos(ang), 0.0]
-        x_ref[k, 6:10] = euler_to_quaternion(0, 0, ang)
+        theta = speed * t
+        x_ref[k, 0] = radius * np.cos(theta)      # x
+        x_ref[k, 1] = radius * np.sin(theta)      # y
+        x_ref[k, 2] = 2.0                          # z
+        x_ref[k, 3] = -radius * speed * np.sin(theta)  # vx
+        x_ref[k, 4] = radius * speed * np.cos(theta)   # vy
+        x_ref[k, 9] = 1.0                          # qw
     
-    print(f"\nTest Scenario:")
-    print(f"  Circular trajectory (r={radius}m, v={speed}m/s)")
+    print(f"\nTest Scenario: Circular trajectory (r={radius}m)")
     
-    # Warm-up
+    # Warm-up solve
     print(f"\nWarm-up solve...")
-    t_start = time.time()
     u_opt, x_pred, info = solver.solve(x0, x_ref)
-    t_warmup = time.time() - t_start
-    print(f"  Time: {t_warmup*1000:.1f} ms")
+    print(f"  Time: {info['solve_time']*1000:.1f} ms")
     print(f"  Success: {info['success']}")
     print(f"  Cost: {info['cost']:.2f}")
+    print(f"  First control: thrust={u_opt[0, 0]:.2f}N, torque={u_opt[0, 1:]}Nm")
+    print(f"  Arm command: {solver.get_arm_command()}")
     
     # Benchmark
-    n_trials = 20
+    n_trials = 50
     print(f"\nRunning {n_trials} benchmark solves...")
     
     solve_times = []
     for i in range(n_trials):
-        x_test = x0 + np.random.randn(15) * 0.05
+        # Slightly perturb initial state
+        x0_perturbed = x0 + 0.01 * np.random.randn(13)
+        x0_perturbed[6:10] /= np.linalg.norm(x0_perturbed[6:10])  # normalize quaternion
         
-        t_start = time.time()
-        u_opt, x_pred, info = solver.solve(x_test, x_ref)
-        t_solve = time.time() - t_start
-        
-        solve_times.append(t_solve * 1000)
-        if i < 5:
-            print(f"  Trial {i+1}: {t_solve*1000:.1f} ms")
+        _, _, info = solver.solve(x0_perturbed, x_ref)
+        solve_times.append(info['solve_time'] * 1000)
     
     solve_times = np.array(solve_times)
     
@@ -397,11 +398,9 @@ def main():
     print(f"Max solve time: {np.max(solve_times):.2f} ms")
     
     if np.max(solve_times) < control_period:
-        slack = control_period - np.max(solve_times)
-        print(f"✓ REAL-TIME FEASIBLE")
-        print(f"  Time slack: {slack:.2f} ms ({slack/control_period*100:.1f}%)")
+        print(f"\n✓ REAL-TIME FEASIBLE")
     else:
-        print(f"✗ NOT REAL-TIME")
+        print(f"\n✗ NOT real-time feasible (max solve > control period)")
     
     print(f"\n{'=' * 60}\n")
 

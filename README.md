@@ -4,7 +4,11 @@ A ROS 2 package for simulating an aerial manipulator system in Gazebo.
 
 ## Logs
 
+TODO
 
+1. check acados controller error
+
+2. modify dynamic model
 
 
 ## Dependencies
