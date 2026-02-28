@@ -352,6 +352,8 @@ class AcadosMPCController(Node):
             # Publish arm commands
             arm_msg = Float64MultiArray()
             arm_msg.data = [arm_vel_1, arm_vel_2]
+            # FOR TEST ONLY!!
+            arm_msg.data = [0., 0.]
             self.arm_cmd_pub.publish(arm_msg)
             
             # Update state estimator

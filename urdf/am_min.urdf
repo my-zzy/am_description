@@ -287,12 +287,12 @@
       </geometry>
       <material name="blue"/>
     </visual>
-    <collision>
+    <!-- <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <cylinder length="0.05" radius="0.02"/>
       </geometry>
-    </collision>
+    </collision> -->
   </link>
 
   <joint name="arm_mount" type="fixed">
@@ -317,18 +317,18 @@
       </geometry>
       <material name="green"/>
     </visual>
-    <collision>
+    <!-- <collision>
       <origin xyz="0 0 -0.1" rpy="0 0 0"/>
       <geometry>
         <cylinder length="0.2" radius="0.01"/>
       </geometry>
-    </collision>
+    </collision> -->
   </link>
 
   <joint name="arm_joint_1" type="revolute">
     <parent link="arm_base_link"/>
     <child link="arm_link_1"/>
-    <origin xyz="0 0 0" rpy="0 -0.3 0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
     <limit lower="-1.57" upper="1.57" effort="1" velocity="1"/>
   </joint>
@@ -349,18 +349,18 @@
       </geometry>
       <material name="red"/>
     </visual>
-    <collision>
+    <!-- <collision>
       <origin xyz="0 0 -0.1" rpy="0 0 0"/>
       <geometry>
         <cylinder length="0.2" radius="0.01"/>
       </geometry>
-    </collision>
+    </collision> -->
   </link>
 
   <joint name="arm_joint_2" type="revolute">
     <parent link="arm_link_1"/>
     <child link="arm_link_2"/>
-    <origin xyz="0 0 -0.2" rpy="0 -1.27 0"/>
+    <origin xyz="0 0 -0.2" rpy="0 -3.14 0"/>
     <axis xyz="0 1 0"/>
     <limit lower="-1.57" upper="1.57" effort="1" velocity="1"/>
   </joint>
@@ -381,12 +381,12 @@
       </geometry>
       <material name="red"/>
     </visual>
-    <collision>
+    <!-- <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <sphere radius="0.025"/>
       </geometry>
-    </collision>
+    </collision> -->
   </link>
 
   <joint name="end_effector_joint" type="fixed">
