@@ -38,6 +38,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Wrench
 from sensor_msgs.msg import Imu, JointState
+from nav_msgs.msg import Odometry
 from std_msgs.msg import Float64MultiArray
 import numpy as np
 import time
@@ -103,6 +104,14 @@ class WholeBodyStateEstimator:
         
         self.last_time = None
         self.acc_world = np.zeros(3)
+
+        # Ground-truth correction
+        self.last_gt_time = None
+        self.last_gt_position = None
+        self.gt_available = False
+
+        # If True, and ground truth is available, do not integrate IMU accel into pos/vel.
+        self.use_ground_truth = False
         
     def update_imu(self, linear_acc, orientation, angular_vel):
         """Update base state from IMU data"""
@@ -122,10 +131,13 @@ class WholeBodyStateEstimator:
         self.acc_world = acc_world
         
         current_time = time.time()
-        if self.last_time is not None:
-            dt = min(current_time - self.last_time, 0.1)
-            self.base_state[3:6] += acc_world * dt
-            self.base_state[0:3] += self.base_state[3:6] * dt
+        # If ground-truth pose is available, do not integrate IMU acceleration into
+        # velocity/position; it will re-introduce drift between GT updates.
+        if not (self.use_ground_truth and self.gt_available):
+            if self.last_time is not None:
+                dt = min(current_time - self.last_time, 0.1)
+                self.base_state[3:6] += acc_world * dt
+                self.base_state[0:3] += self.base_state[3:6] * dt
         self.last_time = current_time
     
     def update_joints(self, joint_positions, joint_velocities=None):
@@ -144,6 +156,41 @@ class WholeBodyStateEstimator:
             self.last_arm_time = current_time
         
         self.arm_positions = new_positions
+
+    def update_ground_truth(self, position, orientation, linear_velocity=None, angular_velocity=None, stamp_sec=None):
+        """Correct base state using ground-truth.
+
+        Args:
+            position: world position [3]
+            orientation: world quaternion [x,y,z,w]
+            linear_velocity: world linear velocity [3] (optional)
+            angular_velocity: body angular velocity [3] (optional)
+            stamp_sec: message timestamp in seconds (optional)
+        """
+        position = np.asarray(position, dtype=float)
+        orientation = np.asarray(orientation, dtype=float)
+        if np.linalg.norm(orientation) > 0:
+            orientation = orientation / np.linalg.norm(orientation)
+
+        # Always correct position + orientation
+        self.base_state[0:3] = position
+        self.base_state[6:10] = orientation
+
+        # Correct velocities if provided; otherwise estimate from finite-difference
+        if linear_velocity is not None:
+            self.base_state[3:6] = np.asarray(linear_velocity, dtype=float)
+        elif stamp_sec is not None and self.last_gt_time is not None and self.last_gt_position is not None:
+            dt = float(stamp_sec - self.last_gt_time)
+            if dt > 1e-4:
+                self.base_state[3:6] = (position - self.last_gt_position) / dt
+
+        if angular_velocity is not None:
+            self.base_state[10:13] = np.asarray(angular_velocity, dtype=float)
+
+        if stamp_sec is not None:
+            self.last_gt_time = float(stamp_sec)
+            self.last_gt_position = position.copy()
+        self.gt_available = True
     
     def get_base_state(self):
         return self.base_state.copy()
@@ -186,6 +233,8 @@ class MPCControllerEF(Node):
             parameters=[
                 ('control_rate', 20.0),
                 ('cost_mode', 'ik'),  # 'ik' (existing) or 'ee' (direct EE penalty)
+                ('use_ground_truth', True),
+                ('ground_truth_topic', '/ground_truth/odom'),
                 ('trajectory_mode', 'hover'),
                 ('trajectory_radius', 0.15),  # Smaller for EE motion
                 ('trajectory_speed', 0.1),
@@ -268,6 +317,18 @@ class MPCControllerEF(Node):
         
         self.joint_sub = self.create_subscription(
             JointState, '/joint_states', self.joint_callback, 10)
+
+        # Optional ground-truth correction (recommended in simulation)
+        self.use_ground_truth = bool(self.get_parameter('use_ground_truth').value)
+        self.ground_truth_topic = str(self.get_parameter('ground_truth_topic').value)
+        self.state_estimator.use_ground_truth = self.use_ground_truth
+        if self.use_ground_truth:
+            self.gt_sub = self.create_subscription(
+                Odometry, self.ground_truth_topic, self.ground_truth_callback, 10
+            )
+            self.get_logger().info(f'Ground truth enabled: subscribing to {self.ground_truth_topic}')
+        else:
+            self.gt_sub = None
         
         # Publishers
         self.thrust_pub = self.create_publisher(
@@ -323,6 +384,29 @@ class MPCControllerEF(Node):
                 joint_velocities = np.array(msg.velocity[0:2])
             self.state_estimator.update_joints(joint_positions, joint_velocities)
             self.joints_received = True
+
+    def ground_truth_callback(self, msg: Odometry):
+        """Use ground-truth odometry to correct IMU drift (simulation)."""
+        pos = msg.pose.pose.position
+        ori = msg.pose.pose.orientation
+        position = np.array([pos.x, pos.y, pos.z], dtype=float)
+        orientation = np.array([ori.x, ori.y, ori.z, ori.w], dtype=float)
+
+        lin = msg.twist.twist.linear
+        ang = msg.twist.twist.angular
+        linear_velocity = np.array([lin.x, lin.y, lin.z], dtype=float)
+        angular_velocity = np.array([ang.x, ang.y, ang.z], dtype=float)
+
+        stamp = msg.header.stamp
+        stamp_sec = float(stamp.sec) + 1e-9 * float(stamp.nanosec)
+
+        self.state_estimator.update_ground_truth(
+            position,
+            orientation,
+            linear_velocity=linear_velocity,
+            angular_velocity=angular_velocity,
+            stamp_sec=stamp_sec,
+        )
     
     def get_ee_trajectory_point(self, t, current_state):
         """
@@ -465,6 +549,12 @@ class MPCControllerEF(Node):
         if not self.imu_received:
             self.get_logger().warn('Waiting for IMU data...', throttle_duration_sec=1.0)
             return
+
+        if self.use_ground_truth and not self.state_estimator.gt_available:
+            self.get_logger().warn(
+                f'Ground truth enabled but no messages received on {self.ground_truth_topic}',
+                throttle_duration_sec=1.0,
+            )
         
         if self.start_log_time is None:
             self.start_log_time = time.time()

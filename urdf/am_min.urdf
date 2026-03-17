@@ -506,4 +506,17 @@
     </plugin>
   </gazebo>
 
+  <!-- ==========================
+       ros2_control plugin
+       ========================== -->
+  <gazebo>
+    <plugin name="p3d_base_controller" filename="libgazebo_ros_p3d.so">
+      <ros>
+        <namespace>/ground_truth</namespace>
+      </ros>
+      <body_name>base_link</body_name>
+      <update_rate>100.0</update_rate>
+    </plugin>
+  </gazebo>
+
 </robot>
