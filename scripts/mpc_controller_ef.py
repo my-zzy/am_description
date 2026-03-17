@@ -185,6 +185,7 @@ class MPCControllerEF(Node):
             namespace='',
             parameters=[
                 ('control_rate', 20.0),
+                ('cost_mode', 'ik'),  # 'ik' (existing) or 'ee' (direct EE penalty)
                 ('trajectory_mode', 'hover'),
                 ('trajectory_radius', 0.15),  # Smaller for EE motion
                 ('trajectory_speed', 0.1),
@@ -197,15 +198,22 @@ class MPCControllerEF(Node):
         self.dt = 1.0 / control_rate
         
         # MPC parameters
+        self.cost_mode = str(self.get_parameter('cost_mode').value).strip().lower()
         mpc_params = {
             'N_horizon': 20,
             'dt': 0.05,
+            'cost_mode': self.cost_mode,
             'Q_pos': 5.0,
             'Q_vel': 1.0,
             'Q_att': 5.0,
             'Q_omega': 0.5,
             'Q_arm_pos': 20.0,  # High for EE tracking
             'Q_arm_vel': 1.0,
+            # Direct EE penalty weights (used when cost_mode='ee')
+            'Q_ee_pos': 50.0,
+            'Q_level': 5.0,
+            'Q_arm_pos_ee': 0.5,
+            'Q_arm_vel_ee': 0.2,
             'R_thrust': 0.01,
             'R_torque': 0.1,
             'R_arm_acc': 0.01,
@@ -225,6 +233,9 @@ class MPCControllerEF(Node):
         self.trajectory_height = self.get_parameter('trajectory_height').value
         self.ee_offset_z = self.get_parameter('ee_offset_z').value
         self.trajectory_time = 0.0
+
+        # Yaw reference helper (used to rotate the arm plane in world)
+        self._yaw_ref_last = 0.0
         
         # Initial arm configuration (extended down: q1=0, q2=π)
         self.arm_default_joints = np.array([0.0, np.pi])
@@ -273,7 +284,8 @@ class MPCControllerEF(Node):
         self.get_logger().info('=' * 50)
         self.get_logger().info(f'Control rate: {control_rate} Hz')
         self.get_logger().info(f'Prediction horizon: {mpc_params["N_horizon"]} steps')
-        self.get_logger().info(f'Arm mode: ACTIVE (end-effector tracking)')
+        self.get_logger().info(f'Cost mode: {self.cost_mode}')
+        self.get_logger().info('Arm mode: ACTIVE (end-effector tracking)')
         self.get_logger().info('Commands: start [mode], stop, plot, stats, quit')
         self.get_logger().info('EE Modes: hover, circle, line, reach')
         self.get_logger().info('=' * 50)
@@ -327,7 +339,6 @@ class MPCControllerEF(Node):
         """
         # Base position reference (stationary or moving)
         base_pos_ref = np.array([0.0, 0.0, self.trajectory_height])
-        base_quat_ref = np.array([0, 0, 0, 1])  # Level attitude
         
         # Default EE position (below base with extended arm)
         ee_default = base_pos_ref + np.array([0.0, 0.0, self.ee_offset_z])
@@ -373,7 +384,21 @@ class MPCControllerEF(Node):
             
         else:
             ee_world_ref = ee_default
-        
+
+        # Compute a yaw reference so the arm's (body-frame) XZ plane can track
+        # world-frame XY motion (e.g., a circle). With two parallel joint axes,
+        # the arm cannot generate body-frame Y motion; yawing the base rotates
+        # the arm plane in world.
+        ee_vec_world = ee_world_ref - base_pos_ref
+        xy_norm = float(np.hypot(ee_vec_world[0], ee_vec_world[1]))
+        if xy_norm > 1e-6:
+            yaw_ref = float(np.arctan2(ee_vec_world[1], ee_vec_world[0]))
+            self._yaw_ref_last = yaw_ref
+        else:
+            yaw_ref = self._yaw_ref_last
+
+        base_quat_ref = euler_to_quaternion(0.0, 0.0, yaw_ref)  # roll, pitch, yaw
+
         return base_pos_ref, ee_world_ref, base_quat_ref
     
     def generate_reference_trajectory(self, current_time, horizon, current_state):
@@ -394,20 +419,41 @@ class MPCControllerEF(Node):
         dt = self.mpc_solver.params['dt']
         
         current_joints = current_state[13:15]
+        current_quat = current_state[6:10]
+        current_yaw = float(quaternion_to_euler(current_quat)[2])
         
         for k in range(horizon + 1):
             t = current_time + k * dt
             
             base_pos_ref, ee_world_ref, base_quat_ref = self.get_ee_trajectory_point(t, current_state)
             ee_refs[k] = ee_world_ref
-            
-            # Compute full state reference from EE position
-            x_ref[k] = self.mpc_solver.compute_ee_reference(
-                base_pos_ref, ee_world_ref, base_quat_ref, current_joints
-            )
-            
-            # Update current_joints for continuity in IK
-            current_joints = x_ref[k, 13:15]
+
+            if self.cost_mode == 'ik':
+                # Compute full state reference from EE position via IK -> joint references
+                x_ref[k] = self.mpc_solver.compute_ee_reference(
+                    base_pos_ref, ee_world_ref, base_quat_ref, current_joints
+                )
+
+                # Update current_joints for continuity in IK
+                current_joints = x_ref[k, 13:15]
+            else:
+                # Direct EE penalty mode: do NOT use IK.
+                # Provide a gentle regularization reference only.
+                x_ref_k = np.zeros(N_STATES)
+                x_ref_k[0:3] = base_pos_ref
+                x_ref_k[3:6] = 0.0
+
+                # Keep level (roll=pitch=0) but don't constrain yaw:
+                # - cost_mode='ee' only penalizes qx,qy, so yaw is free
+                # - keeping yaw continuous avoids large quaternion jumps
+                x_ref_k[6:10] = euler_to_quaternion(0.0, 0.0, current_yaw)
+                x_ref_k[10:13] = 0.0
+
+                # Keep arm near current configuration with low weight (weights set in solver params)
+                x_ref_k[13:15] = current_joints
+                x_ref_k[15:17] = 0.0
+
+                x_ref[k] = x_ref_k
         
         return x_ref, ee_refs
     
@@ -433,7 +479,10 @@ class MPCControllerEF(Node):
         # Solve MPC
         solve_start = time.time()
         try:
-            u_opt, x_pred, info = self.mpc_solver.solve(x_current, x_ref)
+            if self.cost_mode == 'ik':
+                u_opt, x_pred, info = self.mpc_solver.solve(x_current, x_ref)
+            else:
+                u_opt, x_pred, info = self.mpc_solver.solve(x_current, x_ref, ee_ref_trajectory=ee_refs)
             solve_time = time.time() - solve_start
             self.solve_times.append(solve_time * 1000)
             

@@ -159,7 +159,96 @@ The key difference from `mpc_acados` is **higher arm position weights** to prior
 | R_torque | 0.1 | Torque regularization |
 | R_arm_acc | **0.01** | Arm acceleration (LOW for fast motion) |
 
+### Cost Modes (Comparison)
+
+This controller supports two MPC cost formulations for easy comparison:
+
+- `cost_mode=ik` (default): **linear least-squares** tracking of the full state and input. EE tracking is achieved **indirectly** by converting desired EE targets into joint references using IK.
+- `cost_mode=ee`: **nonlinear least-squares** tracking that directly penalizes **end-effector world position error** (no IK). This allows the optimizer to use base yaw + joints together to reduce EE error.
+
+Below, the stage cost $\ell_k$ and terminal cost $V_f$ are written **term-by-term**.
+
+#### IK-based cost (`cost_mode=ik`)
+
+Stage cost (for $k = 0,\dots,N-1$):
+
+$$
+\begin{aligned}
+\ell_k^{ik} =
+&\; Q_{pos}\,\|\mathbf{p}_k - \mathbf{p}_k^{ref}\|^2
+ + Q_{vel}\,\|\mathbf{v}_k - \mathbf{v}_k^{ref}\|^2 \\
+&+ Q_{att}\,\|\mathbf{q}_k - \mathbf{q}_k^{ref}\|^2
+ + Q_{\omega}\,\|\boldsymbol{\omega}_k - \boldsymbol{\omega}_k^{ref}\|^2 \\
+&+ Q_{arm,pos}\,\|\mathbf{q}_{arm,k} - \mathbf{q}_{arm,k}^{ref}\|^2
+ + Q_{arm,vel}\,\|\dot{\mathbf{q}}_{arm,k} - \dot{\mathbf{q}}_{arm,k}^{ref}\|^2 \\
+&+ R_{thrust}\,(T_k - T_k^{ref})^2
+ + R_{torque}\,\|\boldsymbol{\tau}_k - \boldsymbol{\tau}_k^{ref}\|^2
+ + R_{arm,acc}\,\|\ddot{\mathbf{q}}_{arm,k} - \ddot{\mathbf{q}}_{arm,k}^{ref}\|^2
+\end{aligned}
+$$
+
+Terminal cost:
+
+$$
+V_f^{ik} = \gamma\,\Big(
+Q_{pos}\,\|\mathbf{p}_N - \mathbf{p}_N^{ref}\|^2
++ Q_{vel}\,\|\mathbf{v}_N - \mathbf{v}_N^{ref}\|^2
++ Q_{att}\,\|\mathbf{q}_N - \mathbf{q}_N^{ref}\|^2
++ Q_{\omega}\,\|\boldsymbol{\omega}_N - \boldsymbol{\omega}_N^{ref}\|^2
++ Q_{arm,pos}\,\|\mathbf{q}_{arm,N} - \mathbf{q}_{arm,N}^{ref}\|^2
++ Q_{arm,vel}\,\|\dot{\mathbf{q}}_{arm,N} - \dot{\mathbf{q}}_{arm,N}^{ref}\|^2
+\Big)
+$$
+
+where $\gamma = \texttt{Q\_terminal\_factor}$.
+
+Notes:
+- This mode does **not** include an explicit $\|\mathbf{p}_{ee}^{world} - \mathbf{p}_{ee,ref}^{world}\|$ term. It relies on IK to set $\mathbf{q}_{arm}^{ref}$.
+- Quaternion tracking is component-wise (not a geodesic distance).
+
+#### Direct EE-position cost (`cost_mode=ee`)
+
+Stage cost:
+
+$$
+\begin{aligned}
+\ell_k^{ee} =
+&\; Q_{ee,pos}\,\|\mathbf{p}_{ee,k}^{world} - \mathbf{p}_{ee,k}^{ref,world}\|^2 \\
+&+ Q_{pos}\,\|\mathbf{p}_k - \mathbf{p}_k^{ref}\|^2
+ + Q_{vel}\,\|\mathbf{v}_k - \mathbf{v}_k^{ref}\|^2 \\
+&+ Q_{level}\,\Big((q_{x,k}-q_{x,k}^{ref})^2 + (q_{y,k}-q_{y,k}^{ref})^2\Big)
+ + Q_{\omega}\,\|\boldsymbol{\omega}_k - \boldsymbol{\omega}_k^{ref}\|^2 \\
+&+ Q_{arm,pos}^{ee}\,\|\mathbf{q}_{arm,k} - \mathbf{q}_{arm,k}^{ref}\|^2
+ + Q_{arm,vel}^{ee}\,\|\dot{\mathbf{q}}_{arm,k} - \dot{\mathbf{q}}_{arm,k}^{ref}\|^2 \\
+&+ R_{thrust}\,(T_k - T_k^{ref})^2
+ + R_{torque}\,\|\boldsymbol{\tau}_k - \boldsymbol{\tau}_k^{ref}\|^2
+ + R_{arm,acc}\,\|\ddot{\mathbf{q}}_{arm,k} - \ddot{\mathbf{q}}_{arm,k}^{ref}\|^2
+\end{aligned}
+$$
+
+Terminal cost:
+
+$$
+\begin{aligned}
+V_f^{ee} = \gamma\,\Big(
+&\; Q_{ee,pos}\,\|\mathbf{p}_{ee,N}^{world} - \mathbf{p}_{ee,N}^{ref,world}\|^2
++ Q_{pos}\,\|\mathbf{p}_N - \mathbf{p}_N^{ref}\|^2
++ Q_{vel}\,\|\mathbf{v}_N - \mathbf{v}_N^{ref}\|^2 \\
+&+ Q_{level}\,\big((q_{x,N}-q_{x,N}^{ref})^2 + (q_{y,N}-q_{y,N}^{ref})^2\big)
++ Q_{\omega}\,\|\boldsymbol{\omega}_N - \boldsymbol{\omega}_N^{ref}\|^2 \\
+&+ Q_{arm,pos}^{ee}\,\|\mathbf{q}_{arm,N} - \mathbf{q}_{arm,N}^{ref}\|^2
++ Q_{arm,vel}^{ee}\,\|\dot{\mathbf{q}}_{arm,N} - \dot{\mathbf{q}}_{arm,N}^{ref}\|^2
+\Big)
+\end{aligned}
+$$
+
+Key property:
+- Only $q_x$ and $q_y$ are penalized for “leveling”, so **yaw is not directly penalized** in this mode. Yaw can change if that reduces EE world-position error.
+
 ### Reference Trajectory Generation
+
+The following IK steps apply to `cost_mode=ik`.
+For `cost_mode=ee`, you provide $\mathbf{p}_{ee}^{ref,world}(t)$ directly (no IK), and the remaining references are used only for regularization (hover/level/rates/inputs).
 
 1. Define desired **EE trajectory in world frame**: $\mathbf{p}_{ee}^{ref}(t)$
 2. Define desired **base position**: $\mathbf{p}_{base}^{ref}(t)$
@@ -249,6 +338,16 @@ ros2 launch am_description am_launch.launch.py
 
 # Terminal 2: Run EE tracking controller
 ros2 run am_description mpc_controller_ef.py
+```
+
+To choose the cost mode at runtime:
+
+```bash
+# IK-based cost (existing behavior)
+ros2 run am_description mpc_controller_ef.py --ros-args -p cost_mode:=ik
+
+# Direct EE-position cost (no IK)
+ros2 run am_description mpc_controller_ef.py --ros-args -p cost_mode:=ee
 ```
 
 ### Interactive Commands

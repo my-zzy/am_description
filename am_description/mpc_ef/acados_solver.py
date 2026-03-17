@@ -22,11 +22,13 @@ Control vector (6 controls):
 import numpy as np
 import time
 
+from casadi import vertcat
+
 from acados_template import AcadosOcp, AcadosOcpSolver
 from .acados_model import (
     export_quadrotor_model, get_control_bounds, HOVER_THRUST,
     N_STATES, N_CONTROLS, N_BASE_CONTROLS,
-    L1, L2, ARM_MOUNT_Z, forward_kinematics_body
+    L1, L2, ARM_MOUNT_Z, forward_kinematics_body, forward_kinematics
 )
 
 
@@ -165,6 +167,11 @@ class AcadosMPCSolver:
         self.params = {
             'N_horizon': 20,
             'dt': 0.05,
+
+            # Cost mode:
+            #  - 'ik': existing linear LS cost on (x,u) tracking; EE tracking via IK->joint refs.
+            #  - 'ee': nonlinear LS cost that directly penalizes EE world position error (no IK).
+            'cost_mode': 'ik',
             
             # Base state cost weights
             'Q_pos': 5.0,                 # Base position (lower than mpc_acados)
@@ -175,6 +182,16 @@ class AcadosMPCSolver:
             # Arm state cost weights (higher for active tracking)
             'Q_arm_pos': 20.0,            # Arm joint position (high for EE tracking)
             'Q_arm_vel': 1.0,
+
+            # Direct EE tracking weight (used in cost_mode='ee')
+            'Q_ee_pos': 50.0,
+
+            # Leveling weights used in cost_mode='ee' (penalize qx,qy only; yaw remains free)
+            'Q_level': 5.0,
+
+            # Optional arm regularization weights used in cost_mode='ee'
+            'Q_arm_pos_ee': 0.5,
+            'Q_arm_vel_ee': 0.2,
             
             # Control cost weights
             'R_thrust': 0.01,
@@ -200,7 +217,9 @@ class AcadosMPCSolver:
             self.params.update(params)
         
         self.ocp = self._build_ocp()
-        self.solver = AcadosOcpSolver(self.ocp, json_file='acados_ocp_ef.json')
+
+        json_file = 'acados_ocp_ef_ik.json' if self.params['cost_mode'] == 'ik' else 'acados_ocp_ef_ee.json'
+        self.solver = AcadosOcpSolver(self.ocp, json_file=json_file)
         
         self.n_states = N_STATES
         self.n_controls = N_CONTROLS
@@ -227,56 +246,154 @@ class AcadosMPCSolver:
         ocp.dims.N = N
         ocp.solver_options.tf = N * self.params['dt']
         
-        # Cost weights
-        Q_pos = self.params['Q_pos']
-        Q_vel = self.params['Q_vel']
-        Q_att = self.params['Q_att']
-        Q_omega = self.params['Q_omega']
-        Q_arm_pos = self.params['Q_arm_pos']
-        Q_arm_vel = self.params['Q_arm_vel']
-        
-        Q = np.diag([
-            Q_pos, Q_pos, Q_pos,
-            Q_vel, Q_vel, Q_vel,
-            Q_att, Q_att, Q_att, Q_att,
-            Q_omega, Q_omega, Q_omega,
-            Q_arm_pos, Q_arm_pos,
-            Q_arm_vel, Q_arm_vel
-        ])
-        
-        R_thrust = self.params['R_thrust']
-        R_torque = self.params['R_torque']
-        R_arm_acc = self.params['R_arm_acc']
-        
-        R = np.diag([
-            R_thrust,
-            R_torque, R_torque, R_torque,
-            R_arm_acc, R_arm_acc
-        ])
-        
-        # Cost type
-        ocp.cost.cost_type = 'LINEAR_LS'
-        ocp.cost.cost_type_e = 'LINEAR_LS'
-        
-        ny = nx + nu
-        
-        ocp.cost.Vx = np.zeros((ny, nx))
-        ocp.cost.Vx[:nx, :nx] = np.eye(nx)
-        
-        ocp.cost.Vu = np.zeros((ny, nu))
-        ocp.cost.Vu[nx:, :] = np.eye(nu)
-        
-        W = np.zeros((ny, ny))
-        W[:nx, :nx] = Q
-        W[nx:, nx:] = R
-        ocp.cost.W = W
-        
-        ocp.cost.yref = np.zeros((ny,))
-        
-        Q_terminal = self.params['Q_terminal_factor'] * Q
-        ocp.cost.Vx_e = np.eye(nx)
-        ocp.cost.W_e = Q_terminal
-        ocp.cost.yref_e = np.zeros((nx,))
+        cost_mode = self.params.get('cost_mode', 'ik')
+        if cost_mode not in ('ik', 'ee'):
+            raise ValueError(f"Unknown cost_mode '{cost_mode}'. Expected 'ik' or 'ee'.")
+
+        if cost_mode == 'ik':
+            # --- Existing IK-based tracking: LINEAR_LS on (x,u) ---
+            Q_pos = self.params['Q_pos']
+            Q_vel = self.params['Q_vel']
+            Q_att = self.params['Q_att']
+            Q_omega = self.params['Q_omega']
+            Q_arm_pos = self.params['Q_arm_pos']
+            Q_arm_vel = self.params['Q_arm_vel']
+
+            Q = np.diag([
+                Q_pos, Q_pos, Q_pos,
+                Q_vel, Q_vel, Q_vel,
+                Q_att, Q_att, Q_att, Q_att,
+                Q_omega, Q_omega, Q_omega,
+                Q_arm_pos, Q_arm_pos,
+                Q_arm_vel, Q_arm_vel
+            ])
+
+            R_thrust = self.params['R_thrust']
+            R_torque = self.params['R_torque']
+            R_arm_acc = self.params['R_arm_acc']
+
+            R = np.diag([
+                R_thrust,
+                R_torque, R_torque, R_torque,
+                R_arm_acc, R_arm_acc
+            ])
+
+            ocp.cost.cost_type = 'LINEAR_LS'
+            ocp.cost.cost_type_e = 'LINEAR_LS'
+
+            ny = nx + nu
+
+            ocp.cost.Vx = np.zeros((ny, nx))
+            ocp.cost.Vx[:nx, :nx] = np.eye(nx)
+
+            ocp.cost.Vu = np.zeros((ny, nu))
+            ocp.cost.Vu[nx:, :] = np.eye(nu)
+
+            W = np.zeros((ny, ny))
+            W[:nx, :nx] = Q
+            W[nx:, nx:] = R
+            ocp.cost.W = W
+
+            ocp.cost.yref = np.zeros((ny,))
+
+            Q_terminal = self.params['Q_terminal_factor'] * Q
+            ocp.cost.Vx_e = np.eye(nx)
+            ocp.cost.W_e = Q_terminal
+            ocp.cost.yref_e = np.zeros((nx,))
+
+        else:
+            # --- Direct EE world-position tracking: NONLINEAR_LS ---
+            # y = [pos(3), vel(3), qx,qy, omega(3), q_arm(2), dq_arm(2), p_ee_world(3), u(6)]
+            # Penalizing qx,qy keeps the vehicle level while leaving yaw free.
+            x_sym = ocp.model.x
+            u_sym = ocp.model.u
+
+            pos = x_sym[0:3]
+            vel = x_sym[3:6]
+            quat = x_sym[6:10]
+            omega = x_sym[10:13]
+            q_arm = x_sym[13:15]
+            dq_arm = x_sym[15:17]
+
+            p_ee_world = forward_kinematics(pos, quat, q_arm[0], q_arm[1], symbolic=True)
+
+            # Stage output
+            y_expr = vertcat(
+                pos,
+                vel,
+                quat[0], quat[1],
+                omega,
+                q_arm,
+                dq_arm,
+                p_ee_world,
+                u_sym,
+            )
+
+            # Terminal output (no control regularization)
+            y_expr_e = vertcat(
+                pos,
+                vel,
+                quat[0], quat[1],
+                omega,
+                q_arm,
+                dq_arm,
+                p_ee_world,
+            )
+
+            ocp.model.cost_y_expr = y_expr
+            ocp.model.cost_y_expr_e = y_expr_e
+
+            ocp.cost.cost_type = 'NONLINEAR_LS'
+            ocp.cost.cost_type_e = 'NONLINEAR_LS'
+
+            ny = int(y_expr.shape[0])
+            ny_e = int(y_expr_e.shape[0])
+            ocp.dims.ny = ny
+            ocp.dims.ny_e = ny_e
+
+            Q_pos = self.params['Q_pos']
+            Q_vel = self.params['Q_vel']
+            Q_level = self.params.get('Q_level', self.params.get('Q_att', 5.0))
+            Q_omega = self.params['Q_omega']
+            Q_arm_pos = self.params.get('Q_arm_pos_ee', 0.5)
+            Q_arm_vel = self.params.get('Q_arm_vel_ee', 0.2)
+            Q_ee_pos = self.params.get('Q_ee_pos', 50.0)
+
+            R_thrust = self.params['R_thrust']
+            R_torque = self.params['R_torque']
+            R_arm_acc = self.params['R_arm_acc']
+
+            W_diag = np.array(
+                [
+                    # pos
+                    Q_pos, Q_pos, Q_pos,
+                    # vel
+                    Q_vel, Q_vel, Q_vel,
+                    # qx, qy (level)
+                    Q_level, Q_level,
+                    # omega
+                    Q_omega, Q_omega, Q_omega,
+                    # q_arm
+                    Q_arm_pos, Q_arm_pos,
+                    # dq_arm
+                    Q_arm_vel, Q_arm_vel,
+                    # p_ee_world
+                    Q_ee_pos, Q_ee_pos, Q_ee_pos,
+                    # u
+                    R_thrust,
+                    R_torque, R_torque, R_torque,
+                    R_arm_acc, R_arm_acc,
+                ],
+                dtype=float,
+            )
+            if W_diag.shape[0] != ny:
+                raise RuntimeError(f"Internal error: W_diag has {W_diag.shape[0]} entries, expected ny={ny}.")
+            ocp.cost.W = np.diag(W_diag)
+            ocp.cost.yref = np.zeros((ny,))
+
+            W_diag_e = W_diag[:ny_e]
+            ocp.cost.W_e = self.params['Q_terminal_factor'] * np.diag(W_diag_e)
+            ocp.cost.yref_e = np.zeros((ny_e,))
         
         # Control bounds
         u_min, u_max = get_control_bounds()
@@ -305,7 +422,7 @@ class AcadosMPCSolver:
         
         return ocp
     
-    def solve(self, x0, x_ref_trajectory, u_ref=None):
+    def solve(self, x0, x_ref_trajectory, u_ref=None, ee_ref_trajectory=None):
         """
         Solve MPC optimization problem
         
@@ -334,21 +451,66 @@ class AcadosMPCSolver:
         else:
             u_ref_default = u_ref[0] if len(u_ref.shape) > 1 else u_ref
         
-        # Set reference trajectory
-        for k in range(N):
-            x_ref_k = x_ref_trajectory[k] if k < len(x_ref_trajectory) else x_ref_trajectory[-1]
-            
-            if u_ref is not None and k < len(u_ref):
-                u_ref_k = u_ref[k]
-            else:
-                u_ref_k = u_ref_default
-            
-            y_ref = np.concatenate([x_ref_k, u_ref_k])
-            self.solver.set(k, 'yref', y_ref)
-        
-        # Terminal reference
-        x_ref_e = x_ref_trajectory[-1] if len(x_ref_trajectory) > N else x_ref_trajectory[-1]
-        self.solver.set(N, 'yref', x_ref_e)
+        cost_mode = self.params.get('cost_mode', 'ik')
+        if cost_mode == 'ik':
+            # Set reference trajectory (yref = [x_ref, u_ref])
+            for k in range(N):
+                x_ref_k = x_ref_trajectory[k] if k < len(x_ref_trajectory) else x_ref_trajectory[-1]
+
+                if u_ref is not None and k < len(u_ref):
+                    u_ref_k = u_ref[k]
+                else:
+                    u_ref_k = u_ref_default
+
+                y_ref = np.concatenate([x_ref_k, u_ref_k])
+                self.solver.set(k, 'yref', y_ref)
+
+            # Terminal reference (yref_e = x_ref)
+            x_ref_e = x_ref_trajectory[-1] if len(x_ref_trajectory) > N else x_ref_trajectory[-1]
+            self.solver.set(N, 'yref', x_ref_e)
+        else:
+            if ee_ref_trajectory is None:
+                raise ValueError("ee_ref_trajectory is required when cost_mode='ee'.")
+
+            for k in range(N):
+                x_ref_k = x_ref_trajectory[k] if k < len(x_ref_trajectory) else x_ref_trajectory[-1]
+                ee_ref_k = ee_ref_trajectory[k] if k < len(ee_ref_trajectory) else ee_ref_trajectory[-1]
+
+                if u_ref is not None and k < len(u_ref):
+                    u_ref_k = u_ref[k]
+                else:
+                    u_ref_k = u_ref_default
+
+                # Must match y_expr in _build_ocp():
+                # [pos(3), vel(3), qx,qy, omega(3), q_arm(2), dq_arm(2), p_ee_world(3), u(6)]
+                y_ref = np.concatenate(
+                    [
+                        x_ref_k[0:3],
+                        x_ref_k[3:6],
+                        x_ref_k[6:8],
+                        x_ref_k[10:13],
+                        x_ref_k[13:15],
+                        x_ref_k[15:17],
+                        ee_ref_k,
+                        u_ref_k,
+                    ]
+                )
+                self.solver.set(k, 'yref', y_ref)
+
+            x_ref_e = x_ref_trajectory[-1] if len(x_ref_trajectory) > N else x_ref_trajectory[-1]
+            ee_ref_e = ee_ref_trajectory[-1] if len(ee_ref_trajectory) > N else ee_ref_trajectory[-1]
+            y_ref_e = np.concatenate(
+                [
+                    x_ref_e[0:3],
+                    x_ref_e[3:6],
+                    x_ref_e[6:8],
+                    x_ref_e[10:13],
+                    x_ref_e[13:15],
+                    x_ref_e[15:17],
+                    ee_ref_e,
+                ]
+            )
+            self.solver.set(N, 'yref', y_ref_e)
         
         # Warm start
         if self.x_prev is not None and self.u_prev is not None:
