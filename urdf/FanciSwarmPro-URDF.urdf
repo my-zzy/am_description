@@ -1,0 +1,46 @@
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="FanciSwarmPro-URDF">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.00054035 -0.012363 -0.00044963"
+        rpy="0 0 0" />
+      <mass
+        value="2.0563" />
+      <inertia
+        ixx="0.003414"
+        ixy="-5.5546E-09"
+        ixz="-2.2129E-07"
+        iyy="0.0026097"
+        iyz="-1.1563E-08"
+        izz="0.0038959" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file:///home/zhiyang/am_ws/src/am_description/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file:///home/zhiyang/am_ws/src/am_description/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+</robot>
