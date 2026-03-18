@@ -2,13 +2,42 @@
 
 A ROS 2 package for simulating an aerial manipulator system in Gazebo.
 
+
+## Table of Contents
+- [Logs](#logs)
+- [Dependencies](#dependencies)
+- [Installation](#installation)
+- [Basic Usage](#basic-usage)
+  - [Launch the Simulation](#launch-the-simulation)
+  - [Using the Drone Controller Script](#using-the-drone-controller-script)
+  - [Using the Trajectory Controller](#using-the-trajectory-controller)
+  - [Using the Arm Controller](#using-the-arm-controller)
+- [MPC Controllers](#mpc-controllers)
+  - [Standard MPC (scipy-based)](#standard-mpc-scipy-based)
+  - [Acados MPC (full system)](#acados-mpc-full-system)
+  - [Acados MPC Base (quadrotor only)](#acados-mpc-base-quadrotor-only)
+  - [Acados MPC End-Effector (EE tracking)](#acados-mpc-end-effector-ee-tracking)
+- [Other terminal usage](#other-terminal-usage)
+  - [Control the Drone (Thrust)](#control-the-drone-thrust)
+  - [Control the Arm Joints](#control-the-arm-joints)
+  - [View Joint States](#view-joint-states)
+  - [Check Controllers](#check-controllers)
+- [Package Structure](#package-structure)
+- [Controllers](#controllers)
+- [URDF Details](#urdf-details)
+  - [Links](#links)
+  - [Joints](#joints)
+  - [Gazebo Plugins](#gazebo-plugins)
+- [Physical Parameters](#physical-parameters)
+
+
 ## Logs
 
 TODO
 
-1. check acados controller error
+- implement dynamic model
 
-2. modify dynamic model
+- optimize MPC penalize
 
 
 ## Dependencies
@@ -25,7 +54,7 @@ TODO
 1. Clone this package into your ROS 2 workspace:
 ```bash
 cd ~/am_ws/src
-git clone <repository_url> am_description
+git clone <repository_url>
 ```
 
 2. Install dependencies:
@@ -162,7 +191,28 @@ ros2 run am_description mpc_base_controller.py
 Commands: `start <mode>`, `stop`, `plot`, `stats`, `quit`  
 Modes: `hover`, `circle`, `square`, `figure8`, `takeoff`, `up`
 
+### Acados MPC End-Effector (EE tracking)
 
+Whole-body MPC that tracks an end-effector (EE) trajectory by controlling both the base (thrust + torques) and the arm joints.
+
+```bash
+ros2 run am_description mpc_controller_ef.py
+```
+
+Commands: `start <mode>`, `stop`, `status`, `stats`, `plot`, `quit`  
+Modes: `hover`, `circle`, `line`, `vertical`, `reach`, `forest`
+
+Notes:
+- `cost_mode` parameter selects the MPC cost formulation:
+  - `ik`: EE tracking via IK to joint references (linear LS on state/input)
+  - `ee`: direct EE position penalty (nonlinear LS)
+- In simulation, you may want to disable ground-truth override if your sim does not publish a GT odometry topic: set `use_ground_truth:=false`.
+
+MPC details [README](am_description/mpc_ef/README.md)
+
+<p align="center">
+  <img src="fig/mpc_ef_results_ee_gt.png" width="90%">
+</p>
 
 ## Other terminal usage
 

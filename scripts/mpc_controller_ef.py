@@ -260,7 +260,7 @@ class MPCControllerEF(Node):
             'Q_arm_vel': 1.0,
             # Direct EE penalty weights (used when cost_mode='ee')
             'Q_ee_pos': 50.0,
-            'Q_level': 5.0,
+            'Q_level': 2.0,
             'Q_arm_pos_ee': 0.5,
             'Q_arm_vel_ee': 0.2,
             'R_thrust': 0.01,
@@ -348,7 +348,7 @@ class MPCControllerEF(Node):
         self.get_logger().info(f'Cost mode: {self.cost_mode}')
         self.get_logger().info('Arm mode: ACTIVE (end-effector tracking)')
         self.get_logger().info('Commands: start [mode], stop, plot, stats, quit')
-        self.get_logger().info('EE Modes: hover, circle, line, reach')
+        self.get_logger().info('EE Modes: hover, circle, line, vertical, reach, forest')
         self.get_logger().info('=' * 50)
     
     def imu_callback(self, msg: Imu):
@@ -465,6 +465,18 @@ class MPCControllerEF(Node):
             else:
                 x_offset = 0.2
             ee_world_ref = ee_default + np.array([x_offset, 0.0, 0.0])
+
+        elif self.trajectory_mode == 'forest':
+            # Wind forward like a trail in a forest:
+            # - advance forward in +X
+            # - weave in Y with a sinusoid
+            # - keep EE height nearly constant (no Z oscillation)
+            forward_speed = float(self.trajectory_speed)  # m/s
+            wavelength = 0.6  # m, lateral weave wavelength along the path
+            omega = 2.0 * np.pi * forward_speed / max(wavelength, 1e-3)
+            x_offset = forward_speed * t
+            y_offset = float(self.trajectory_radius) * np.sin(omega * t)
+            ee_world_ref = ee_default + np.array([x_offset, y_offset, 0.0])
             
         else:
             ee_world_ref = ee_default
@@ -805,11 +817,11 @@ def main(args=None):
                 if cmd.startswith('start'):
                     parts = cmd.split()
                     mode = parts[1] if len(parts) > 1 else 'hover'
-                    if mode in ['hover', 'circle', 'line', 'vertical', 'reach']:
+                    if mode in ['hover', 'circle', 'line', 'vertical', 'reach', 'forest']:
                         controller.start_trajectory(mode)
                     else:
                         print(f"Unknown mode: {mode}")
-                        print("Available: hover, circle, line, vertical, reach")
+                        print("Available: hover, circle, line, vertical, reach, forest")
                     
                 elif cmd == 'stop':
                     controller.stop()
