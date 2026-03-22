@@ -232,7 +232,7 @@ class MPCControllerEF(Node):
             namespace='',
             parameters=[
                 ('control_rate', 20.0),
-                ('cost_mode', 'ik'),  # 'ik' (existing) or 'ee' (direct EE penalty)
+                ('cost_mode', 'ee'),  # 'ik' (existing) or 'ee' (direct EE penalty)
                 ('use_ground_truth', True),
                 ('ground_truth_topic', '/ground_truth/odom'),
                 ('trajectory_mode', 'hover'),
@@ -260,7 +260,7 @@ class MPCControllerEF(Node):
             'Q_arm_vel': 1.0,
             # Direct EE penalty weights (used when cost_mode='ee')
             'Q_ee_pos': 50.0,
-            'Q_level': 2.0,
+            'Q_level': 5.0,
             'Q_arm_pos_ee': 0.5,
             'Q_arm_vel_ee': 0.2,
             'R_thrust': 0.01,
